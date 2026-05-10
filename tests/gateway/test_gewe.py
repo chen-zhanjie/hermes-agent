@@ -1,7 +1,7 @@
 """Tests for the native GeWe v2 callback adapter."""
 
 from gateway.config import PlatformConfig
-from gateway.platforms.gewe import GeweAdapter, normalize_gewe_callback
+from gateway.platforms.gewe import GeweAdapter, _route_binding_for_message, normalize_gewe_callback
 
 
 def _gewe_payload(**overrides):
@@ -130,3 +130,51 @@ def test_voice_message_builds_download_hint_from_voiceurl():
     assert attachment.duration_seconds == 1
     assert attachment.download_hint is not None
     assert attachment.download_hint.endpoint == "downloadVoice"
+
+
+def test_shared_route_prefers_mentioned_bound_wxid_in_group():
+    msg = normalize_gewe_callback(
+        _gewe_payload(
+            eventCode="group_msg_event",
+            fromGroup="25500496398@chatroom",
+            fromUser="wxid_sender_a",
+            atUserList="wxid_bound_b",
+        )
+    )
+    store = {
+        "bindings": {
+            "user:wxid_sender_a": {"type": "user", "identity": "wxid_sender_a", "profile": "sender"},
+            "user:wxid_bound_b": {"type": "user", "identity": "wxid_bound_b", "profile": "mentioned"},
+        }
+    }
+
+    binding = _route_binding_for_message(store, msg)
+
+    assert binding is not None
+    assert binding.profile == "mentioned"
+
+
+def test_shared_route_uses_group_listen_all_before_sender_binding():
+    msg = normalize_gewe_callback(
+        _gewe_payload(
+            eventCode="group_msg_event",
+            fromGroup="25500496398@chatroom",
+            fromUser="wxid_sender_a",
+        )
+    )
+    store = {
+        "bindings": {
+            "user:wxid_sender_a": {"type": "user", "identity": "wxid_sender_a", "profile": "sender"},
+            "group:25500496398@chatroom": {
+                "type": "group",
+                "identity": "25500496398@chatroom",
+                "profile": "group-owner",
+                "listen_all": True,
+            },
+        }
+    }
+
+    binding = _route_binding_for_message(store, msg)
+
+    assert binding is not None
+    assert binding.profile == "group-owner"

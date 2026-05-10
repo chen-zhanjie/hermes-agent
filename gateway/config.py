@@ -1644,6 +1644,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "GEWE_GROUP_ALLOWED_CHATS": "group_allowed_chats",
             "GEWE_GROUP_REQUIRE_MENTION": "group_require_mention",
             "GEWE_BOT_WXID": "bot_wxid",
+            "GEWE_PROFILE_ROUTING_MODE": "profile_routing_mode",
+            "GEWE_PROFILE_ROUTER_STORE": "profile_router_store",
         }
         for env_key, extra_key in env_map.items():
             raw = os.getenv(env_key, "").strip()

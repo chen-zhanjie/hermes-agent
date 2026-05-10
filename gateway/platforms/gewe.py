@@ -914,7 +914,8 @@ def _media_type_for_attachment(attachment: GeweAttachment) -> str:
 
 def _gewe_ok(data: Dict[str, Any]) -> bool:
     value = data.get("ret", data.get("code", 0))
-    return value in (0, "0", None) or str(data.get("msg", "")).lower() == "success"
+    message = str(data.get("msg", "")).strip().lower()
+    return value in (0, "0", 200, "200", None) or message in {"success", "操作成功"}
 
 
 def _parse_sse(raw: str) -> Dict[str, str]:

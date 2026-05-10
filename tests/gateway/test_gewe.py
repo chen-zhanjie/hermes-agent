@@ -1,7 +1,7 @@
 """Tests for the native GeWe v2 callback adapter."""
 
 from gateway.config import PlatformConfig
-from gateway.platforms.gewe import GeweAdapter, _route_binding_for_message, normalize_gewe_callback
+from gateway.platforms.gewe import GeweAdapter, _gewe_ok, _route_binding_for_message, normalize_gewe_callback
 
 
 def _gewe_payload(**overrides):
@@ -28,6 +28,11 @@ def _adapter(**extra):
             extra={"app_id": "wx_app", "bot_wxid": "wxid_bot", **extra},
         )
     )
+
+
+
+def test_gewe_send_success_accepts_ret_200_operation_success():
+    assert _gewe_ok({"ret": 200, "msg": "操作成功", "data": {"msgId": 123}}) is True
 
 
 def test_v2_private_text_normalizes_sender_and_peer():

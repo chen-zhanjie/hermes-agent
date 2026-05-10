@@ -69,7 +69,6 @@ DEFAULT_DIRECT_PATH = "/gewe/callback"
 DEFAULT_RELAY_PATH = "/gewe/relay"
 DEFAULT_RELAY_BASE_URL = "https://hook.yunzxu.com"
 SUPPORTED_INBOUND_MODES = {"direct-callback", "relay-callback", "relay-sse"}
-SUPPORTED_PROFILE_ROUTING_MODES = {"standalone", "shared"}
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 DEFAULT_PROFILE_ROUTER_STORE = "platforms/gewe/bindings.json"
 
@@ -140,13 +139,6 @@ class GeweProfileBinding:
     source: str = "manual"
 
 
-@dataclass
-class GeweProfileInvite:
-    code: str
-    profile: str
-    label: str = ""
-    expires_at: int = 0
-
 
 class GeweAdapter(BasePlatformAdapter):
     """Native Hermes adapter for GeWe WeChat API."""
@@ -177,17 +169,6 @@ class GeweAdapter(BasePlatformAdapter):
         self._group_require_mention = _as_bool(extra.get("group_require_mention") or os.getenv("GEWE_GROUP_REQUIRE_MENTION"), False)
         self._bot_wxids = _split_csv(extra.get("bot_wxid") or os.getenv("GEWE_BOT_WXID") or "")
 
-        self._profile_routing_mode = str(
-            extra.get("profile_routing_mode")
-            or os.getenv("GEWE_PROFILE_ROUTING_MODE")
-            or "standalone"
-        ).strip().lower()
-        if self._profile_routing_mode not in SUPPORTED_PROFILE_ROUTING_MODES:
-            logger.error(
-                "[GeWe] Unknown profile_routing_mode=%s; supported modes are %s",
-                self._profile_routing_mode,
-                sorted(SUPPORTED_PROFILE_ROUTING_MODES),
-            )
         self._profile_router_store = Path(
             extra.get("profile_router_store")
             or os.getenv("GEWE_PROFILE_ROUTER_STORE")
@@ -212,9 +193,6 @@ class GeweAdapter(BasePlatformAdapter):
             return False
         if self._inbound_mode not in SUPPORTED_INBOUND_MODES:
             logger.warning("[GeWe] GEWE_INBOUND_MODE must be one of: %s", ", ".join(sorted(SUPPORTED_INBOUND_MODES)))
-            return False
-        if self._profile_routing_mode not in SUPPORTED_PROFILE_ROUTING_MODES:
-            logger.warning("[GeWe] GEWE_PROFILE_ROUTING_MODE must be one of: %s", ", ".join(sorted(SUPPORTED_PROFILE_ROUTING_MODES)))
             return False
         if not self._bot_wxids:
             logger.warning("[GeWe] GEWE_BOT_WXID is required for reliable group mention routing")
@@ -454,10 +432,9 @@ class GeweAdapter(BasePlatformAdapter):
         if dedupe_key and self._dedup.is_duplicate(dedupe_key):
             return
 
-        if self._profile_routing_mode == "shared":
-            routed = await self._route_profile_message(msg)
-            if routed:
-                return
+        routed = await self._route_profile_message(msg)
+        if routed:
+            return
 
         media_urls, media_types = await self._cache_media(msg)
         text = self._message_text(msg)
@@ -492,16 +469,10 @@ class GeweAdapter(BasePlatformAdapter):
             return True
         _mark_store_processed(store, msg)
 
-        invite = _claim_profile_invite(store, msg)
-        if invite:
-            _save_profile_router_store(self._profile_router_store, store)
-            await self.send(msg.sender_id, f"绑定成功，后续消息将由 profile「{invite.profile}」处理。")
-            return True
-
         binding = _route_binding_for_message(store, msg)
         if not binding:
             _save_profile_router_store(self._profile_router_store, store)
-            return True
+            return False
         if binding.profile == self._current_profile:
             _save_profile_router_store(self._profile_router_store, store)
             return False
@@ -960,12 +931,11 @@ def _load_profile_router_store(path: Path) -> Dict[str, Any]:
             data = json.load(fh)
         if isinstance(data, dict):
             data.setdefault("bindings", {})
-            data.setdefault("invites", {})
             data.setdefault("processed", {})
             return data
     except (OSError, json.JSONDecodeError):
         pass
-    return {"bindings": {}, "invites": {}, "processed": {}}
+    return {"bindings": {}, "processed": {}}
 
 
 def _save_profile_router_store(path: Path, store: Dict[str, Any]) -> None:
@@ -986,16 +956,10 @@ def _save_profile_router_store(path: Path, store: Dict[str, Any]) -> None:
 
 def _cleanup_profile_router_store(store: Dict[str, Any]) -> None:
     now = int(time.time())
-    invites = store.get("invites") if isinstance(store.get("invites"), dict) else {}
     processed = store.get("processed") if isinstance(store.get("processed"), dict) else {}
-    for code, invite in list(invites.items()):
-        expires_at = _int(invite.get("expires_at") if isinstance(invite, dict) else None) or 0
-        if expires_at and expires_at <= now:
-            invites.pop(code, None)
     for key, seen_at in list(processed.items()):
         if now - int(seen_at or 0) > 600:
             processed.pop(key, None)
-    store["invites"] = invites
     store["processed"] = processed
 
 
@@ -1016,41 +980,6 @@ def _mark_store_processed(store: Dict[str, Any], msg: NormalizedGeweMessage) -> 
     processed = store.get("processed") if isinstance(store.get("processed"), dict) else {}
     processed[key] = int(time.time())
     store["processed"] = processed
-
-
-def _claim_profile_invite(store: Dict[str, Any], msg: NormalizedGeweMessage) -> Optional[GeweProfileInvite]:
-    if msg.conversation_type != "direct":
-        return None
-    parts = msg.text.strip().split()
-    if len(parts) != 2 or parts[0].lower() not in {"/pair", "pair", "/bind", "bind"}:
-        return None
-    code = parts[1].strip().upper()
-    invites = store.get("invites") if isinstance(store.get("invites"), dict) else {}
-    raw = invites.get(code)
-    if not isinstance(raw, dict):
-        return None
-    expires_at = _int(raw.get("expires_at")) or 0
-    if expires_at and expires_at <= int(time.time()):
-        invites.pop(code, None)
-        return None
-    invite = GeweProfileInvite(code=code, profile=_str(raw.get("profile")), label=_str(raw.get("label")), expires_at=expires_at)
-    if not invite.profile:
-        return None
-    invites.pop(code, None)
-    bindings = store.get("bindings") if isinstance(store.get("bindings"), dict) else {}
-    now = int(time.time())
-    bindings[_binding_key("user", msg.sender_id)] = {
-        "type": "user",
-        "identity": msg.sender_id,
-        "profile": invite.profile,
-        "name": invite.label or msg.sender_id,
-        "bound_at": now,
-        "updated_at": now,
-        "source": "invite",
-    }
-    store["invites"] = invites
-    store["bindings"] = bindings
-    return invite
 
 
 def _binding_key(binding_type: str, identity: str) -> str:

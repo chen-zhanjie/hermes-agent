@@ -1639,6 +1639,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "GEWE_RELAY_SSE_URL": "relay_sse_url",
             "GEWE_ALLOWED_USERS": "allowed_users",
             "GEWE_ALLOW_ALL_USERS": "allow_all_users",
+            "GEWE_UNAUTHORIZED_DM_BEHAVIOR": "unauthorized_dm_behavior",
             "GEWE_GROUP_POLICY": "group_policy",
             "GEWE_GROUP_ALLOWED_CHATS": "group_allowed_chats",
             "GEWE_GROUP_REQUIRE_MENTION": "group_require_mention",

@@ -115,7 +115,10 @@ def _configured_platforms() -> list[str]:
         "weixin": "WEIXIN_ACCOUNT_ID",
         "qqbot": "QQ_APP_ID",
     }
-    return [name for name, env in checks.items() if os.getenv(env)]
+    configured = [name for name, env in checks.items() if os.getenv(env)]
+    if os.getenv("GEWE_TOKEN") and os.getenv("GEWE_APP_ID") and os.getenv("GEWE_BOT_WXID"):
+        configured.append("gewe")
+    return configured
 
 
 def _memory_provider(config: dict) -> str:

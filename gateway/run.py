@@ -4856,6 +4856,13 @@ class GatewayRunner:
                 return None
             return WeixinAdapter(config)
 
+        elif platform == Platform.GEWE:
+            from gateway.platforms.gewe import GeweAdapter, check_gewe_requirements
+            if not check_gewe_requirements():
+                logger.warning("GeWe: aiohttp/httpx not installed")
+                return None
+            return GeweAdapter(config)
+
         elif platform == Platform.MATTERMOST:
             from gateway.platforms.mattermost import MattermostAdapter, check_mattermost_requirements
             if not check_mattermost_requirements():
@@ -4956,6 +4963,7 @@ class GatewayRunner:
             Platform.WECOM: "WECOM_ALLOWED_USERS",
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+            Platform.GEWE: "GEWE_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
@@ -4982,6 +4990,7 @@ class GatewayRunner:
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
+            Platform.GEWE: "GEWE_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
@@ -5168,6 +5177,7 @@ class GatewayRunner:
                 Platform.WECOM:    "WECOM_ALLOWED_USERS",
                 Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
+                Platform.GEWE:     "GEWE_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
             }
@@ -5220,6 +5230,38 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    def _try_claim_pairing_invite(self, event: MessageEvent) -> bool:
+        """Claim an owner-generated invite when the user sends /pair CODE in DM."""
+        source = event.source
+        if not source or source.chat_type != "dm" or not source.user_id or not source.platform:
+            return False
+        text = (event.text or "").strip()
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2 or parts[0].lower() not in {"/pair", "pair"}:
+            return False
+        platform_name = source.platform.value
+        result = self.pairing_store.claim_invite_code(
+            platform_name,
+            parts[1],
+            source.user_id,
+            source.user_name or "",
+        )
+        adapter = self.adapters.get(source.platform)
+        async def _send_notice(message: str) -> None:
+            if adapter:
+                await adapter.send(source.chat_id, message)
+
+        if result:
+            task = asyncio.create_task(_send_notice("Pairing complete. You can now use Hermes here."))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            logger.info("Pairing invite claimed: platform=%s user=%s", platform_name, source.user_id)
+        else:
+            task = asyncio.create_task(_send_notice("Pairing code not found or expired."))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        return True
+    
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5288,6 +5330,8 @@ class GatewayRunner:
             # authorized — drop silently instead of triggering the pairing
             # flow with a None user_id.
             logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+            return None
+        elif source.chat_type == "dm" and self._try_claim_pairing_invite(event):
             return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)

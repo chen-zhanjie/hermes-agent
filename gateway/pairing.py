@@ -191,6 +191,57 @@ class PairingStore:
 
             return code
 
+    def generate_invite_code(self, platform: str, label: str = "") -> Optional[str]:
+        """
+        Generate an owner-created pairing code that a user can claim by DM.
+
+        This supports platforms like WeChat/GeWe where the operator may want to
+        create a binding key first, then ask the intended person to send a
+        specific message such as ``/pair ABCD2345``.  The actual user_id is not
+        known until the platform callback arrives, so it is filled in by
+        ``claim_invite_code``.
+        """
+        with self._lock:
+            self._cleanup_expired(platform)
+
+            if self._is_locked_out(platform):
+                return None
+
+            pending = self._load_json(self._pending_path(platform))
+            if len(pending) >= MAX_PENDING_PER_PLATFORM:
+                return None
+
+            code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
+            pending[code] = {
+                "user_id": "",
+                "user_name": label,
+                "created_at": time.time(),
+                "invite": True,
+            }
+            self._save_json(self._pending_path(platform), pending)
+            return code
+
+    def claim_invite_code(
+        self, platform: str, code: str, user_id: str, user_name: str = ""
+    ) -> Optional[dict]:
+        """Claim an owner-created invite code and approve the real user_id."""
+        if not user_id:
+            return None
+        with self._lock:
+            self._cleanup_expired(platform)
+            code = code.upper().strip()
+
+            pending = self._load_json(self._pending_path(platform))
+            entry = pending.get(code)
+            if not entry or not entry.get("invite"):
+                self._record_failed_attempt(platform)
+                return None
+
+            pending.pop(code)
+            self._save_json(self._pending_path(platform), pending)
+            self._approve_user(platform, user_id, user_name or entry.get("user_name", ""))
+            return {"user_id": user_id, "user_name": user_name or entry.get("user_name", "")}
+
     def approve_code(self, platform: str, code: str) -> Optional[dict]:
         """
         Approve a pairing code. Adds the user to the approved list.
@@ -218,6 +269,10 @@ class PairingStore:
                 return None
 
             entry = pending.pop(code)
+            if entry.get("invite"):
+                pending[code] = entry
+                self._save_json(self._pending_path(platform), pending)
+                return None
             self._save_json(self._pending_path(platform), pending)
 
             # Add to approved list
@@ -240,8 +295,9 @@ class PairingStore:
                 results.append({
                     "platform": p,
                     "code": code,
-                    "user_id": info["user_id"],
+                    "user_id": info.get("user_id") or "<invite>",
                     "user_name": info.get("user_name", ""),
+                    "invite": bool(info.get("invite")),
                     "age_minutes": age_min,
                 })
         return results

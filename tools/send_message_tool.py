@@ -599,6 +599,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
+    if platform == Platform.GEWE:
+        return await _send_gewe(pconfig, chat_id, message, media_files=media_files)
+
     # --- Discord: special handling for media attachments ---
     if platform == Platform.DISCORD:
         last_result = None
@@ -685,7 +688,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, gewe, signal, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -693,7 +696,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, gewe, signal, yuanbao and feishu"
         )
 
     last_result = None
@@ -1670,6 +1673,30 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
         )
     except Exception as e:
         return _error(f"Weixin send failed: {e}")
+
+
+async def _send_gewe(pconfig, chat_id, message, media_files=None):
+    """Send via GeWe using the native adapter implementation."""
+    try:
+        from gateway.platforms.gewe import GeweAdapter, check_gewe_requirements
+        if not check_gewe_requirements():
+            return {"error": "GeWe requirements not met. Need aiohttp + httpx."}
+    except ImportError:
+        return {"error": "GeWe adapter not available."}
+
+    adapter = GeweAdapter(pconfig)
+    adapter._http_client = __import__("httpx").AsyncClient(timeout=30.0, follow_redirects=True)
+    try:
+        if media_files:
+            return _error("GeWe send_message media delivery currently requires URL-based image/file inputs.")
+        result = await adapter.send(chat_id, message)
+        if not result.success:
+            return _error(f"GeWe send failed: {result.error}")
+        return {"success": True, "platform": "gewe", "chat_id": chat_id, "message_id": result.message_id}
+    except Exception as e:
+        return _error(f"GeWe send failed: {e}")
+    finally:
+        await adapter._cleanup()
 
 
 async def _send_bluebubbles(extra, chat_id, message):

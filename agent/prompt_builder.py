@@ -520,6 +520,14 @@ PLATFORM_HINTS = {
         "documents. You can also include image URLs in markdown format ![alt](url) and they "
         "will be downloaded and sent as native media when possible."
     ),
+    "gewe": (
+        "You are on WeChat through the GeWe API. Keep replies compact and chat-friendly. "
+        "Plain text is always supported. Images and files can be sent natively when they are "
+        "available as public URLs; local media paths may be referenced as normal text if direct "
+        "upload is not configured. Inbound messages may include text, images, voice, files, and "
+        "merged chat records; treat summaries like [图片], [语音], [文件], and [聊天记录] as real "
+        "WeChat content from the user."
+    ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "
         "You CAN send media files natively — to deliver a file to the user, include "

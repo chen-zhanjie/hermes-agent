@@ -90,7 +90,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
+    "wecom", "wecom_callback", "weixin", "gewe", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao",
 })
 
@@ -109,6 +109,7 @@ _HOME_TARGET_ENV_VARS = {
     "feishu": "FEISHU_HOME_CHANNEL",
     "wecom": "WECOM_HOME_CHANNEL",
     "weixin": "WEIXIN_HOME_CHANNEL",
+    "gewe": "GEWE_HOME_CHANNEL",
     "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
     "qqbot": "QQBOT_HOME_CHANNEL",
 }

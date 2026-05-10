@@ -106,6 +106,7 @@ class Platform(Enum):
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
+    GEWE = "gewe"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
@@ -379,6 +380,11 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: True,
     Platform.FEISHU: lambda cfg: bool(cfg.extra.get("app_id")),
+    Platform.GEWE: lambda cfg: bool(
+        cfg.extra.get("app_id")
+        and cfg.extra.get("bot_wxid")
+        and (cfg.token or cfg.extra.get("token"))
+    ),
     Platform.WECOM: lambda cfg: bool(cfg.extra.get("bot_id")),
     Platform.WECOM_CALLBACK: lambda cfg: bool(
         cfg.extra.get("corp_id") or cfg.extra.get("apps")
@@ -466,14 +472,14 @@ class GatewayConfig:
                 and (config.token or config.extra.get("token"))
             )
 
-        # Generic token/api_key auth covers Telegram, Discord, Slack, etc.
-        if config.token or config.api_key:
-            return True
-
         # Platform-specific check
         checker = _PLATFORM_CONNECTED_CHECKERS.get(platform)
         if checker is not None:
             return checker(config)
+
+        # Generic token/api_key auth covers Telegram, Discord, Slack, etc.
+        if config.token or config.api_key:
+            return True
 
         # Plugin-registered platforms
         try:
@@ -768,6 +774,12 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["allow_from"] = platform_cfg["allow_from"]
                 if "group_policy" in platform_cfg:
                     bridged["group_policy"] = platform_cfg["group_policy"]
+                if "group_allowed_chats" in platform_cfg:
+                    bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
+                if "group_require_mention" in platform_cfg:
+                    bridged["group_require_mention"] = platform_cfg["group_require_mention"]
+                if "bot_wxid" in platform_cfg:
+                    bridged["bot_wxid"] = platform_cfg["bot_wxid"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
                 if plat in (Platform.DISCORD, Platform.SLACK) and "channel_skill_bindings" in platform_cfg:
@@ -1596,6 +1608,61 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=weixin_home,
                 name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
                 thread_id=os.getenv("WEIXIN_HOME_CHANNEL_THREAD_ID") or None,
+            )
+
+    gewe_token = os.getenv("GEWE_TOKEN")
+    gewe_app_id = os.getenv("GEWE_APP_ID")
+    gewe_enabled_env = os.getenv("GEWE_ENABLED", "").strip().lower()
+    gewe_enabled_explicit = gewe_enabled_env in ("true", "1", "yes", "on", "false", "0", "no", "off")
+    if gewe_token or gewe_app_id or gewe_enabled_explicit:
+        if Platform.GEWE not in config.platforms:
+            config.platforms[Platform.GEWE] = PlatformConfig()
+        if gewe_enabled_explicit:
+            config.platforms[Platform.GEWE].enabled = gewe_enabled_env in ("true", "1", "yes", "on")
+        elif gewe_token or gewe_app_id:
+            config.platforms[Platform.GEWE].enabled = True
+        if gewe_token:
+            config.platforms[Platform.GEWE].token = gewe_token
+        extra = config.platforms[Platform.GEWE].extra
+        if gewe_app_id:
+            extra["app_id"] = gewe_app_id
+        env_map = {
+            "GEWE_API_BASE_URL": "api_base_url",
+            "GEWE_INBOUND_MODE": "inbound_mode",
+            "GEWE_CALLBACK_HOST": "callback_host",
+            "GEWE_CALLBACK_PATH": "callback_path",
+            "GEWE_CALLBACK_SECRET": "callback_secret",
+            "GEWE_RELAY_BASE_URL": "relay_base_url",
+            "GEWE_RELAY_APP_ID": "relay_app_id",
+            "GEWE_RELAY_APP_TOKEN": "relay_app_token",
+            "GEWE_RELAY_CHANNEL": "relay_channel",
+            "GEWE_RELAY_SSE_URL": "relay_sse_url",
+            "GEWE_ALLOWED_USERS": "allowed_users",
+            "GEWE_ALLOW_ALL_USERS": "allow_all_users",
+            "GEWE_GROUP_POLICY": "group_policy",
+            "GEWE_GROUP_ALLOWED_CHATS": "group_allowed_chats",
+            "GEWE_GROUP_REQUIRE_MENTION": "group_require_mention",
+            "GEWE_BOT_WXID": "bot_wxid",
+        }
+        for env_key, extra_key in env_map.items():
+            raw = os.getenv(env_key, "").strip()
+            if raw:
+                extra[extra_key] = raw.rstrip("/") if extra_key.endswith("base_url") else raw
+        callback_port = os.getenv("GEWE_CALLBACK_PORT", "").strip()
+        if callback_port:
+            try:
+                extra["callback_port"] = int(callback_port)
+            except ValueError:
+                logger.warning("Ignoring invalid GEWE_CALLBACK_PORT=%r", callback_port)
+        download_media = os.getenv("GEWE_DOWNLOAD_MEDIA", "").strip()
+        if download_media:
+            extra["download_media"] = download_media.lower() in ("true", "1", "yes", "on")
+        gewe_home = os.getenv("GEWE_HOME_CHANNEL", "").strip()
+        if gewe_home:
+            config.platforms[Platform.GEWE].home_channel = HomeChannel(
+                platform=Platform.GEWE,
+                chat_id=gewe_home,
+                name=os.getenv("GEWE_HOME_CHANNEL_NAME", "Home"),
             )
 
     # BlueBubbles (iMessage)

@@ -404,11 +404,15 @@ def show_status(args):
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
         "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
         "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
+        "GeWe": ("GEWE_APP_ID", "GEWE_HOME_CHANNEL"),
     }
+    gewe_configured = bool(os.getenv("GEWE_TOKEN") and os.getenv("GEWE_APP_ID") and os.getenv("GEWE_BOT_WXID"))
 
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
+        if name == "GeWe":
+            has_token = gewe_configured
         
         home_channel = ""
         if home_var:
@@ -418,6 +422,8 @@ def show_status(args):
             home_channel = os.getenv("QQ_HOME_CHANNEL", "")
         
         status = "configured" if has_token else "not configured"
+        if name == "GeWe" and not has_token and (os.getenv("GEWE_TOKEN") or os.getenv("GEWE_APP_ID") or os.getenv("GEWE_BOT_WXID")):
+            status = "incomplete (needs GEWE_TOKEN, GEWE_APP_ID, GEWE_BOT_WXID)"
         if home_channel:
             status += f" (home: {home_channel})"
         

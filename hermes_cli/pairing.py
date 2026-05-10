@@ -3,6 +3,7 @@ CLI commands for the DM pairing system.
 
 Usage:
     hermes pairing list              # Show all pending + approved users
+    hermes pairing generate <platform> [label]  # Generate an invite code
     hermes pairing approve <platform> <code>  # Approve a pairing code
     hermes pairing revoke <platform> <user_id> # Revoke user access
     hermes pairing clear-pending     # Clear all expired/pending codes
@@ -17,6 +18,8 @@ def pairing_command(args):
 
     if action == "list":
         _cmd_list(store)
+    elif action == "generate":
+        _cmd_generate(store, args.platform, getattr(args, "label", "") or "")
     elif action == "approve":
         _cmd_approve(store, args.platform, args.code)
     elif action == "revoke":
@@ -24,7 +27,7 @@ def pairing_command(args):
     elif action == "clear-pending":
         _cmd_clear_pending(store)
     else:
-        print("Usage: hermes pairing {list|approve|revoke|clear-pending}")
+        print("Usage: hermes pairing {list|generate|approve|revoke|clear-pending}")
         print("Run 'hermes pairing --help' for details.")
 
 
@@ -59,6 +62,19 @@ def _cmd_list(store):
         print("\n  No approved users.")
 
     print()
+
+
+def _cmd_generate(store, platform: str, label: str = ""):
+    """Generate an invite code that a user claims with /pair CODE."""
+    platform = platform.lower().strip()
+    code = store.generate_invite_code(platform, label.strip())
+    if not code:
+        print(f"\n  Could not generate a pairing invite for '{platform}'.")
+        print("  There may be too many pending codes or the platform is temporarily locked.\n")
+        return
+    print(f"\n  Pairing invite for {platform}: {code}")
+    print(f"  Ask the user to send: /pair {code}")
+    print("  The first user who sends that message in a DM will be approved.\n")
 
 
 def _cmd_approve(store, platform: str, code: str):

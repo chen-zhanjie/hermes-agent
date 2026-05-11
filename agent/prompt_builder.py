@@ -522,9 +522,14 @@ PLATFORM_HINTS = {
     ),
     "gewe": (
         "You are on WeChat through the GeWe API. Keep replies compact and chat-friendly. "
-        "Plain text is always supported. Images and files can be sent natively when they are "
-        "available as public URLs; local media paths may be referenced as normal text if direct "
-        "upload is not configured. Inbound messages may include text, images, voice, files, and "
+        "Plain text is always supported. You can send media files natively: include "
+        "MEDIA:/absolute/path/to/file in your response. Local media paths are automatically "
+        "uploaded to the configured webhook-router temporary file host and then sent through "
+        "GeWe as native WeChat attachments; images are sent as photos, .silk audio as voice, "
+        "and other files as downloadable documents. You can also include public image URLs in "
+        "markdown format ![alt](url) and they will be sent as photos. Do NOT tell the user you "
+        "lack file-sending capability or that local media requires a separate public image host. "
+        "Inbound messages may include text, images, voice, files, and "
         "merged chat records; treat summaries like [图片], [语音], [文件], and [聊天记录] as real "
         "WeChat content from the user."
     ),

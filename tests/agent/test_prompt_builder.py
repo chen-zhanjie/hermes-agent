@@ -827,6 +827,15 @@ class TestPromptBuilderConstants:
         assert "MEDIA:" in hint
         assert "Markdown" in hint
 
+    def test_platform_hints_gewe_advertises_auto_upload_media_delivery(self):
+        hint = PLATFORM_HINTS["gewe"]
+        assert "GeWe" in hint
+        assert "MEDIA:/absolute/path/to/file" in hint
+        assert "automatically" in hint
+        assert "webhook-router" in hint
+        assert "Do NOT tell the user you lack file-sending capability" in hint
+        assert "local media requires a separate public image host" in hint
+
     def test_platform_hints_webui(self):
         hint = PLATFORM_HINTS["webui"]
         assert "WebUI" in hint

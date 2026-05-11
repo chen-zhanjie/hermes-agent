@@ -102,6 +102,7 @@ class GeweAttachment:
     md5: str = ""
     aes_key: str = ""
     cdn_file_id: str = ""
+    cdn_file_ids: List[str] = field(default_factory=list)
     duration_seconds: Optional[int] = None
     quoted_message_id: str = ""
     quoted_sender_id: str = ""
@@ -1004,6 +1005,7 @@ def _cdn_attachment(kind: str, source: ET.Element, xml: str, app_id: str) -> Gew
         md5=_str(source.attrib.get("md5")),
         aes_key=_str(source.attrib.get("aeskey") or source.attrib.get("cdnthumbaeskey")),
         cdn_file_id=_str(source.attrib.get("cdnmidimgurl") or source.attrib.get("cdnvideourl") or source.attrib.get("voiceurl") or source.attrib.get("cdnthumburl")),
+        cdn_file_ids=_voice_cdn_file_ids(source) if kind == "voice" else [],
         file_ext=_suffix_for_kind(kind) if kind == "voice" else "",
         thumb_url=_str(source.attrib.get("cdnthumburl")),
         duration_seconds=_duration_seconds(source.attrib.get("playlength") or source.attrib.get("voicelength")),
@@ -1087,6 +1089,7 @@ def _record_item_attachment(item: ET.Element, message_type: str, app_id: str) ->
         md5=_first_text(item, "fullmd5", "dataitemmd5", "md5"),
         aes_key=aes_key,
         cdn_file_id=cdn_file_id,
+        cdn_file_ids=[cdn_file_id] if cdn_file_id else [],
         duration_seconds=_first_int(item, "duration", "playlength", "voicelength"),
         raw=ET.tostring(item, encoding="unicode"),
     )
@@ -1329,25 +1332,47 @@ def _record_cdn_download_field_candidates(item: ET.Element) -> List[tuple[str, s
 
 
 def _voice_cdn_download_hints(attachment: GeweAttachment, app_id: str) -> List[GeweDownloadHint]:
-    if not (attachment.cdn_file_id and attachment.aes_key):
+    if not attachment.aes_key:
+        return []
+    file_ids = _voice_download_file_ids(attachment)
+    if not file_ids:
         return []
     suffixes = _voice_download_suffixes(attachment)
     total_sizes = [str(attachment.file_size or "")]
     if attachment.file_size:
         total_sizes.append("")
     hints = []
-    for download_type in ("5", _cdn_download_type("voice")):
-        for suffix in suffixes:
-            for total_size in total_sizes:
-                hints.append(GeweDownloadHint("downloadCdn", {
-                    "appId": app_id,
-                    "aesKey": attachment.aes_key,
-                    "totalSize": total_size,
-                    "type": download_type,
-                    "fileId": attachment.cdn_file_id,
-                    "suffix": suffix,
-                }))
+    for file_id in file_ids:
+        for download_type in ("5", _cdn_download_type("voice")):
+            for suffix in suffixes:
+                for total_size in total_sizes:
+                    hints.append(GeweDownloadHint("downloadCdn", {
+                        "appId": app_id,
+                        "aesKey": attachment.aes_key,
+                        "totalSize": total_size,
+                        "type": download_type,
+                        "fileId": file_id,
+                        "suffix": suffix,
+                    }))
     return _dedupe_download_hints(hints)
+
+
+def _voice_download_file_ids(attachment: GeweAttachment) -> List[str]:
+    file_ids: List[str] = []
+    for candidate in [attachment.cdn_file_id, *attachment.cdn_file_ids]:
+        value = str(candidate or "").strip()
+        if value and value not in file_ids:
+            file_ids.append(value)
+    return file_ids
+
+
+def _voice_cdn_file_ids(source: ET.Element) -> List[str]:
+    file_ids: List[str] = []
+    for name in ("voiceurl", "bufid", "clientmsgid", "voicemd5", "cdnvoiceurl", "cdnurl"):
+        value = _str(source.attrib.get(name)).strip()
+        if value and value not in file_ids:
+            file_ids.append(value)
+    return file_ids
 
 
 def _voice_download_suffixes(attachment: GeweAttachment) -> List[str]:
@@ -1654,11 +1679,28 @@ def _download_response_summary(value: Any) -> Any:
         summary: Dict[str, Any] = {}
         for key, nested in value.items():
             if key in {"ret", "code", "msg", "message"}:
-                summary[key] = _str(nested)[:180]
+                summary[key] = _safe_response_text(nested)
+            elif key == "data" and isinstance(nested, dict):
+                summary[key] = _download_response_data_summary(nested)
             else:
                 summary[key] = _value_shape(nested)
         return summary
     return _value_shape(value)
+
+
+def _download_response_data_summary(value: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {"type": "dict", "keys": sorted(str(key) for key in value.keys())[:30]}
+    for key in ("code", "ret", "msg", "message", "detail", "error"):
+        if key in value:
+            summary[key] = _safe_response_text(value.get(key))
+    return summary
+
+
+def _safe_response_text(value: Any) -> str:
+    text = _redact_text(_str(value))
+    if _is_http_url(text):
+        return "http-url"
+    return text[:180]
 
 
 def _value_shape(value: Any) -> Any:

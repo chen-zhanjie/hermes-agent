@@ -888,6 +888,23 @@ def test_voice_message_builds_download_hint_from_voiceurl():
     assert any(hint.endpoint == "downloadCdn" for hint in attachment.download_hint.fallbacks)
 
 
+def test_voice_message_builds_cdn_fallbacks_from_additional_voice_ids():
+    voice_xml = """<msg><voicemsg voicelength="1039" length="1267"
+      aeskey="voice-aes" voiceurl="voice-file-id" bufid="voice-buf-id"
+      clientmsgid="voice-client-id" voicemd5="voice-md5" fromusername="wxid_sender" /></msg>"""
+    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml))
+
+    assert msg is not None
+    attachment = msg.attachments[0]
+    assert attachment.cdn_file_ids == ["voice-file-id", "voice-buf-id", "voice-client-id", "voice-md5"]
+    assert attachment.download_hint is not None
+    fallback_file_ids = [hint.request_body["fileId"] for hint in attachment.download_hint.fallbacks]
+    assert "voice-file-id" in fallback_file_ids
+    assert "voice-buf-id" in fallback_file_ids
+    assert "voice-client-id" in fallback_file_ids
+    assert "voice-md5" in fallback_file_ids
+
+
 @pytest.mark.asyncio
 async def test_voice_message_download_caches_silk_for_stt_path():
     voice_xml = """<msg><voicemsg voicelength="1039" length="1267"

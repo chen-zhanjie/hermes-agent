@@ -12,6 +12,7 @@ from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.platforms.gewe import (
     GeweAdapter,
+    GeweDownloadHint,
     _gewe_ok,
     _media_type_for_attachment,
     _to_hermes_type,
@@ -698,6 +699,54 @@ def test_chat_record_image_item_builds_download_image_hint_from_cdn_fields():
     assert 'cdnmidimgurl="full-cdn-file-id"' in hint_xml
     assert 'cdnthumburl="thumb-cdn-file-id"' in hint_xml
     assert 'cdnthumbaeskey="thumb-aes"' in hint_xml
+    assert any(hint.endpoint == "downloadCdn" for hint in attachment.download_hint.fallbacks)
+
+
+@pytest.mark.asyncio
+async def test_download_media_url_tries_fallbacks_and_top_level_url():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(side_effect=[
+        {"ret": 200, "msg": "操作成功", "data": {}},
+        {"ret": 200, "msg": "操作成功", "fileUrl": "https://cdn.example.com/fallback.jpg"},
+    ])
+    hint = GeweDownloadHint(
+        "downloadImage",
+        {"appId": "wx_app", "xml": "<msg><img aeskey=\"x\" /></msg>", "type": 2},
+        fallbacks=[GeweDownloadHint("downloadCdn", {"appId": "wx_app", "fileId": "file", "aesKey": "key"})],
+    )
+
+    assert await adapter._download_media_url(hint) == "https://cdn.example.com/fallback.jpg"
+    assert adapter._api_post.await_count == 2
+    assert adapter._api_post.await_args_list[0].args[0].endswith("/downloadImage")
+    assert adapter._api_post.await_args_list[1].args[0].endswith("/downloadCdn")
+
+
+@pytest.mark.asyncio
+async def test_chat_record_image_cache_uses_download_fallback_url():
+    record_xml = _chat_record_xml(
+        _record_dataitem(
+            2,
+            sourcename="陈可乐",
+            datadesc="[图片]",
+            cdndataurl="image-cdn-file-id",
+            cdndatakey="image-aes",
+            fullmd5size="1234",
+        )
+    )
+    msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(side_effect=[
+        {"ret": 200, "msg": "操作成功", "data": {}},
+        {"ret": 200, "msg": "操作成功", "data": {}},
+        {"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/image.jpg"}},
+    ])
+    adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/images/img_abc.jpg")
+
+    media_urls, media_types = await adapter._cache_media(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/images/img_abc.jpg"]
+    assert media_types == ["image/jpeg"]
+    adapter._cache_url.assert_awaited_once_with("https://cdn.example.com/image.jpg", msg.items[0].attachments[0])
 
 
 @pytest.mark.asyncio

@@ -82,6 +82,7 @@ def check_gewe_requirements() -> bool:
 class GeweDownloadHint:
     endpoint: str
     request_body: Dict[str, Any]
+    fallbacks: List["GeweDownloadHint"] = field(default_factory=list)
 
 
 @dataclass
@@ -788,9 +789,21 @@ class GeweAdapter(BasePlatformAdapter):
         return media_urls, media_types
 
     async def _download_media_url(self, hint: GeweDownloadHint) -> str:
-        data = await self._api_post(f"/gewe/v2/api/message/{hint.endpoint}", hint.request_body)
-        payload = data.get("data") if isinstance(data, dict) else data
-        return _find_http_url(payload, ("fileUrl", "url", "downloadUrl", "file_url"))
+        for candidate in [hint, *hint.fallbacks]:
+            data = await self._api_post(f"/gewe/v2/api/message/{candidate.endpoint}", candidate.request_body)
+            payload = data.get("data") if isinstance(data, dict) else data
+            url = _find_http_url(payload, ("fileUrl", "url", "downloadUrl", "file_url"))
+            if not url:
+                url = _find_http_url(data, ("fileUrl", "url", "downloadUrl", "file_url"))
+            if url:
+                return url
+            logger.warning(
+                "[GeWe] Media download returned no HTTP URL: endpoint=%s request=%s response=%s",
+                candidate.endpoint,
+                _download_request_summary(candidate.request_body),
+                _download_response_summary(data),
+            )
+        return ""
 
     async def _cache_url(self, url: str, attachment: GeweAttachment) -> str:
         if not self._http_client:
@@ -1052,24 +1065,11 @@ def _record_item_attachment(item: ET.Element, message_type: str, app_id: str) ->
         raw=ET.tostring(item, encoding="unicode"),
     )
     if attachment.kind == "image":
-        image_xml = _record_image_xml(item)
-        if image_xml:
+        image_hints = _record_image_download_hints(item, app_id, attachment.file_ext or _suffix_for_kind(attachment.kind))
+        if image_hints:
             attachment.needs_download = True
-            attachment.download_hint = GeweDownloadHint("downloadImage", {
-                "appId": app_id,
-                "xml": image_xml,
-                "type": 2,
-            })
-        elif attachment.cdn_file_id and attachment.aes_key:
-            attachment.needs_download = True
-            attachment.download_hint = GeweDownloadHint("downloadCdn", {
-                "appId": app_id,
-                "aesKey": attachment.aes_key,
-                "totalSize": str(attachment.file_size or ""),
-                "type": _cdn_download_type(attachment.kind),
-                "fileId": attachment.cdn_file_id,
-                "suffix": attachment.file_ext or _suffix_for_kind(attachment.kind),
-            })
+            attachment.download_hint = image_hints[0]
+            attachment.download_hint.fallbacks.extend(image_hints[1:])
     elif attachment.cdn_file_id and attachment.aes_key:
         attachment.needs_download = True
         attachment.download_hint = GeweDownloadHint("downloadCdn", {
@@ -1263,6 +1263,13 @@ def _suffix_for_kind(kind: str) -> str:
 
 
 def _record_cdn_download_fields(item: ET.Element) -> tuple[str, str, Optional[int]]:
+    candidates = _record_cdn_download_field_candidates(item)
+    if candidates:
+        return candidates[0]
+    return "", "", _first_int(item, "fullmd5size", "datasize", "totallen", "length")
+
+
+def _record_cdn_download_field_candidates(item: ET.Element) -> List[tuple[str, str, Optional[int]]]:
     pairs = (
         (
             _first_text(item, "cdndataurl", "cdnmidimgurl", "cdnvideourl", "voiceurl", "cdnattachurl", "attachid"),
@@ -1275,10 +1282,47 @@ def _record_cdn_download_fields(item: ET.Element) -> tuple[str, str, Optional[in
             _first_int(item, "cdnthumblength", "thumbsize", "thumbfullsize"),
         ),
     )
+    candidates: List[tuple[str, str, Optional[int]]] = []
+    seen: set[tuple[str, str]] = set()
     for file_id, aes_key, size in pairs:
-        if file_id and aes_key:
-            return file_id, aes_key, size
-    return "", "", _first_int(item, "fullmd5size", "datasize", "totallen", "length")
+        if not (file_id and aes_key):
+            continue
+        key = (file_id, aes_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append((file_id, aes_key, size))
+    return candidates
+
+
+def _record_image_download_hints(item: ET.Element, app_id: str, suffix: str) -> List[GeweDownloadHint]:
+    hints: List[GeweDownloadHint] = []
+    image_xml = _record_image_xml(item)
+    if image_xml:
+        hints.append(GeweDownloadHint("downloadImage", {"appId": app_id, "xml": image_xml, "type": 2}))
+        hints.append(GeweDownloadHint("downloadImage", {"appId": app_id, "xml": image_xml}))
+    for file_id, aes_key, size in _record_cdn_download_field_candidates(item):
+        hints.append(GeweDownloadHint("downloadCdn", {
+            "appId": app_id,
+            "aesKey": aes_key,
+            "totalSize": str(size or ""),
+            "type": _cdn_download_type("image"),
+            "fileId": file_id,
+            "suffix": suffix,
+        }))
+    return _dedupe_download_hints(hints)
+
+
+def _dedupe_download_hints(hints: List[GeweDownloadHint]) -> List[GeweDownloadHint]:
+    deduped: List[GeweDownloadHint] = []
+    seen: set[str] = set()
+    for hint in hints:
+        key = json.dumps({"endpoint": hint.endpoint, "request_body": hint.request_body}, sort_keys=True, ensure_ascii=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(hint)
+    return deduped
 
 
 def _record_image_xml(item: ET.Element) -> str:
@@ -1361,6 +1405,70 @@ def _first_int(node: ET.Element, *names: str) -> Optional[int]:
         if value is not None:
             return value
     return None
+
+
+def _download_request_summary(body: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for key, value in body.items():
+        if key == "xml":
+            root = _parse_xml(_str(value))
+            summary[key] = _xml_shape(root) if root is not None else {"chars": len(_str(value)), "valid_xml": False}
+        elif key in {"aesKey", "fileId"}:
+            summary[key] = _short_fingerprint(value)
+        elif key == "appId":
+            summary[key] = _safe_id(_str(value))
+        else:
+            summary[key] = value
+    return summary
+
+
+def _download_response_summary(value: Any) -> Any:
+    if isinstance(value, dict):
+        summary: Dict[str, Any] = {}
+        for key, nested in value.items():
+            if key in {"ret", "code", "msg", "message"}:
+                summary[key] = _str(nested)[:180]
+            else:
+                summary[key] = _value_shape(nested)
+        return summary
+    return _value_shape(value)
+
+
+def _value_shape(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {"type": "dict", "keys": sorted(str(key) for key in value.keys())[:30]}
+    if isinstance(value, list):
+        return {"type": "list", "len": len(value), "items": [_value_shape(item) for item in value[:3]]}
+    if isinstance(value, str):
+        if _is_http_url(value):
+            return "http-url"
+        return {"type": "str", "chars": len(value), "sample": _redact_text(value[:80])}
+    return {"type": type(value).__name__, "value": value}
+
+
+def _xml_shape(root: ET.Element) -> Dict[str, Any]:
+    tags = [elem.tag for elem in root.iter()][:20]
+    attrs: Dict[str, List[str]] = {}
+    for elem in root.iter():
+        if elem.attrib:
+            attrs[elem.tag] = sorted(elem.attrib.keys())
+    return {"root": root.tag, "tags": tags, "attrs": attrs}
+
+
+def _short_fingerprint(value: Any) -> str:
+    text = _str(value)
+    if not text:
+        return ""
+    if len(text) <= 12:
+        return f"len={len(text)}"
+    return f"len={len(text)} {text[:4]}...{text[-4:]}"
+
+
+def _redact_text(value: str) -> str:
+    text = _str(value)
+    if text.startswith("sk-"):
+        return "sk-***"
+    return text
 
 
 def _find_http_url(value: Any, preferred_keys: tuple[str, ...] = ()) -> str:

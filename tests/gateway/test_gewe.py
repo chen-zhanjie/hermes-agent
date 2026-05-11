@@ -1,7 +1,13 @@
 """Tests for the native GeWe v2 callback adapter."""
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
+import asyncio
+from unittest.mock import AsyncMock
+
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource
 from gateway.platforms.gewe import (
     GeweAdapter,
     _gewe_ok,
@@ -36,6 +42,77 @@ def _adapter(**extra):
         )
     )
 
+
+
+
+@pytest.mark.asyncio
+async def test_media_followup_debounce_merges_text_into_single_photo_event():
+    adapter = _adapter(media_followup_grace_seconds=0.05)
+    adapter.handle_message = AsyncMock()
+    source = SessionSource(
+        platform=Platform.GEWE,
+        chat_id="wxid_sender",
+        chat_type="dm",
+        user_id="wxid_sender",
+        user_name="wxid_sender",
+    )
+    media_event = MessageEvent(
+        text="[表情]",
+        message_type=MessageType.PHOTO,
+        source=source,
+        message_id="m1",
+        media_urls=["/tmp/emoji.gif"],
+        media_types=["image/gif"],
+    )
+    text_event = MessageEvent(
+        text="看看这个",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m2",
+    )
+
+    await adapter._dispatch_event_with_media_debounce(media_event)
+    adapter.handle_message.assert_not_called()
+
+    await adapter._dispatch_event_with_media_debounce(text_event)
+    await asyncio.sleep(0.08)
+
+    adapter.handle_message.assert_awaited_once()
+    dispatched = adapter.handle_message.await_args.args[0]
+    assert dispatched is media_event
+    assert dispatched.text == "看看这个"
+    assert dispatched.message_type == MessageType.PHOTO
+    assert dispatched.media_urls == ["/tmp/emoji.gif"]
+    assert dispatched.media_types == ["image/gif"]
+    assert dispatched.message_id == "m2"
+
+
+@pytest.mark.asyncio
+async def test_media_followup_debounce_flushes_media_without_followup():
+    adapter = _adapter(media_followup_grace_seconds=0.01)
+    adapter.handle_message = AsyncMock()
+    source = SessionSource(
+        platform=Platform.GEWE,
+        chat_id="wxid_sender",
+        chat_type="dm",
+        user_id="wxid_sender",
+        user_name="wxid_sender",
+    )
+    media_event = MessageEvent(
+        text="[图片]",
+        message_type=MessageType.PHOTO,
+        source=source,
+        message_id="m1",
+        media_urls=["/tmp/image.jpg"],
+        media_types=["image/jpeg"],
+    )
+
+    await adapter._dispatch_event_with_media_debounce(media_event)
+    adapter.handle_message.assert_not_called()
+
+    await asyncio.sleep(0.05)
+
+    adapter.handle_message.assert_awaited_once_with(media_event)
 
 
 def test_direct_mode_acquires_distinct_gewe_app_and_token_locks(monkeypatch):

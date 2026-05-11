@@ -54,8 +54,10 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
+    merge_pending_message_event,
 )
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.session import build_session_key
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ DEFAULT_RELAY_PATH = "/gewe/relay"
 DEFAULT_RELAY_BASE_URL = "https://hook.yunzxu.com"
 SUPPORTED_INBOUND_MODES = {"direct-callback", "relay-callback", "relay-sse"}
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
+_MEDIA_ONLY_PLACEHOLDERS = {"[图片]", "[表情]"}
 
 
 def check_gewe_requirements() -> bool:
@@ -163,6 +166,12 @@ class GeweAdapter(BasePlatformAdapter):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._last_event_id_file = Path(extra.get("last_event_id_file") or (get_hermes_home() / "gewe_last_event_id"))
+        self._media_followup_grace_seconds = _as_float(
+            extra.get("media_followup_grace_seconds")
+            or os.getenv("GEWE_MEDIA_FOLLOWUP_GRACE_SECONDS"),
+            2.0,
+        )
+        self._pending_media_followups: Dict[str, tuple[MessageEvent, asyncio.Task]] = {}
         self._gewe_lock_keys: List[tuple[str, str]] = []
 
     async def connect(self) -> bool:
@@ -198,6 +207,7 @@ class GeweAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        await self._cancel_media_followup_tasks()
         if self._sse_task:
             self._sse_task.cancel()
             try:
@@ -477,7 +487,102 @@ class GeweAdapter(BasePlatformAdapter):
             reply_to_message_id=msg.reply_to_message_id or None,
             reply_to_text=msg.reply_to_text or None,
         )
+        await self._dispatch_event_with_media_debounce(event)
+
+    async def _dispatch_event_with_media_debounce(self, event: MessageEvent) -> None:
+        key = self._media_followup_key(event)
+        if not key or self._media_followup_grace_seconds <= 0:
+            await self.handle_message(event)
+            return
+
+        if self._is_debounceable_media_event(event):
+            pending = self._pending_media_followups.get(key)
+            if pending:
+                pending_event, pending_task = pending
+                pending_task.cancel()
+                merge_pending_message_event({key: pending_event}, key, event)
+                self._pending_media_followups[key] = (
+                    pending_event,
+                    self._schedule_media_followup_flush(key),
+                )
+                return
+            self._pending_media_followups[key] = (
+                event,
+                self._schedule_media_followup_flush(key),
+            )
+            return
+
+        pending = self._pending_media_followups.pop(key, None)
+        if pending:
+            pending_event, pending_task = pending
+            pending_task.cancel()
+            if event.message_type == MessageType.TEXT and (event.text or "").strip():
+                self._merge_text_into_pending_media_event(pending_event, event)
+                await self.handle_message(pending_event)
+                return
+            await self.handle_message(pending_event)
+
         await self.handle_message(event)
+
+    def _schedule_media_followup_flush(self, key: str) -> asyncio.Task:
+        task = asyncio.create_task(self._flush_pending_media_followup_after_delay(key))
+        task.add_done_callback(self._media_followup_task_done)
+        return task
+
+    async def _flush_pending_media_followup_after_delay(self, key: str) -> None:
+        await asyncio.sleep(self._media_followup_grace_seconds)
+        pending = self._pending_media_followups.pop(key, None)
+        if not pending:
+            return
+        event, _task = pending
+        await self.handle_message(event)
+
+    def _media_followup_task_done(self, task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.warning("[GeWe] Media follow-up debounce task failed", exc_info=True)
+
+    async def _cancel_media_followup_tasks(self) -> None:
+        pending = list(self._pending_media_followups.values())
+        self._pending_media_followups.clear()
+        for _event, task in pending:
+            task.cancel()
+        for _event, task in pending:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def _media_followup_key(self, event: MessageEvent) -> str:
+        source = event.source
+        if not source:
+            return ""
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    @staticmethod
+    def _is_debounceable_media_event(event: MessageEvent) -> bool:
+        if event.message_type != MessageType.PHOTO or not event.media_urls:
+            return False
+        return (event.text or "").strip() in _MEDIA_ONLY_PLACEHOLDERS
+
+    @staticmethod
+    def _merge_text_into_pending_media_event(media_event: MessageEvent, text_event: MessageEvent) -> None:
+        followup_text = (text_event.text or "").strip()
+        if not followup_text:
+            return
+        if (media_event.text or "").strip() in _MEDIA_ONLY_PLACEHOLDERS:
+            media_event.text = followup_text
+        else:
+            media_event.text = BasePlatformAdapter._merge_caption(media_event.text, followup_text)
+        media_event.message_id = text_event.message_id or media_event.message_id
+        media_event.timestamp = text_event.timestamp
 
     def _should_process_group(self, msg: NormalizedGeweMessage) -> bool:
         """Apply GeWe group-level routing before gateway user auth.
@@ -1045,6 +1150,15 @@ def _as_bool(value: Any, default: bool) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"true", "1", "yes", "on"}
     return bool(value)
+
+
+def _as_float(value: Any, default: float) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _split_csv(value: Any) -> set[str]:

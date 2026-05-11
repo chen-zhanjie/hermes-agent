@@ -100,6 +100,32 @@ class TestResolveProviderClientMainAlias:
         assert client is not None
         assert "beans.local" in str(client.base_url)
 
+    def test_runtime_custom_preserves_named_config_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "my-model", "provider": "custom:beans"},
+            "custom_providers": [
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+            ],
+        })
+        from agent.auxiliary_client import (
+            _read_main_provider,
+            clear_runtime_main,
+            resolve_vision_provider_client,
+            set_runtime_main,
+        )
+
+        set_runtime_main("custom", "my-model")
+        try:
+            assert _read_main_provider() == "custom:beans"
+            provider, client, model = resolve_vision_provider_client()
+        finally:
+            clear_runtime_main()
+
+        assert provider == "custom:beans"
+        assert client is not None
+        assert model == "my-model"
+        assert "beans.local" in str(client.base_url)
+
     def test_main_resolves_github_copilot_alias(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "gpt-5.4", "provider": "github-copilot"},

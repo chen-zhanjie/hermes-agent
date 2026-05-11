@@ -1488,18 +1488,8 @@ def _read_main_model() -> str:
     return ""
 
 
-def _read_main_provider() -> str:
-    """Read the user's configured main provider from config.yaml.
-
-    Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
-    if not configured.
-
-    Runtime override: see ``_read_main_model`` — same mechanism for the
-    provider half of the runtime tuple.
-    """
-    override = _RUNTIME_MAIN_PROVIDER
-    if isinstance(override, str) and override.strip():
-        return override.strip().lower()
+def _read_config_main_provider() -> str:
+    """Read the persisted main provider from config.yaml."""
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1511,6 +1501,26 @@ def _read_main_provider() -> str:
     except Exception:
         pass
     return ""
+
+
+def _read_main_provider() -> str:
+    """Read the user's configured main provider from config.yaml.
+
+    Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
+    if not configured.
+
+    Runtime override: see ``_read_main_model`` — same mechanism for the
+    provider half of the runtime tuple.
+    """
+    override = _RUNTIME_MAIN_PROVIDER
+    if isinstance(override, str) and override.strip():
+        normalized_override = override.strip().lower()
+        if normalized_override == "custom":
+            config_provider = _read_config_main_provider()
+            if config_provider.startswith("custom:"):
+                return config_provider
+        return normalized_override
+    return _read_config_main_provider()
 
 
 # Process-local override set by AIAgent at session/turn start. Single-threaded

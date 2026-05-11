@@ -200,6 +200,62 @@ async def test_send_image_uses_gewe_img_url_field():
 
 
 @pytest.mark.asyncio
+async def test_send_document_uses_gewe_post_file_fields():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 457}})
+
+    result = await adapter.send_document(
+        "wxid_friend",
+        "https://cdn.example.com/pkg/a909.xls?q-signature=abc",
+    )
+
+    assert result.success is True
+    adapter._api_post.assert_awaited_once_with(
+        "/gewe/v2/api/message/postFile",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "fileUrl": "https://cdn.example.com/pkg/a909.xls?q-signature=abc",
+            "fileName": "a909.xls",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_document_honors_explicit_file_name():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 458}})
+
+    result = await adapter.send_document(
+        "wxid_friend",
+        "https://cdn.example.com/download?id=123",
+        file_name="report.xlsx",
+    )
+
+    assert result.success is True
+    adapter._api_post.assert_awaited_once_with(
+        "/gewe/v2/api/message/postFile",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "fileUrl": "https://cdn.example.com/download?id=123",
+            "fileName": "report.xlsx",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_document_local_path_falls_back_to_text():
+    adapter = _adapter()
+    adapter.send = AsyncMock(return_value=type("Result", (), {"success": True, "message_id": "txt"})())
+
+    result = await adapter.send_document("wxid_friend", "/tmp/report.xlsx")
+
+    assert result.success is True
+    adapter.send.assert_awaited_once_with("wxid_friend", "[文件] report.xlsx: /tmp/report.xlsx")
+
+
+@pytest.mark.asyncio
 async def test_delete_message_uses_cached_gewe_revoke_payload():
     adapter = _adapter()
     adapter._api_post = AsyncMock(

@@ -25,7 +25,7 @@ import socket as _socket
 from dataclasses import dataclass, field
 from html import unescape
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.parse import quote, urljoin, urlsplit
 from xml.etree import ElementTree as ET
 
@@ -56,6 +56,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_video_from_bytes,
     merge_pending_message_event,
+    safe_url_for_log,
 )
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.session import build_session_key
@@ -754,41 +755,55 @@ class GeweAdapter(BasePlatformAdapter):
         if not self._download_media:
             return media_urls, media_types
         for attachment in _flatten_attachments(msg):
+            path = ""
+            tried_urls: set[str] = set()
+
+            async def cache_candidate(candidate_url: str) -> bool:
+                nonlocal path
+                if not candidate_url or candidate_url in tried_urls:
+                    return False
+                tried_urls.add(candidate_url)
+                if not _is_http_url(candidate_url):
+                    return False
+                try:
+                    path = await self._cache_url(candidate_url, attachment)
+                    return True
+                except Exception:
+                    logger.warning(
+                        "[GeWe] Failed to cache media candidate url=%s kind=%s",
+                        safe_url_for_log(candidate_url),
+                        attachment.kind,
+                        exc_info=True,
+                    )
+                    return False
+
             file_url = attachment.url
-            if attachment.download_hint and (not file_url or not _is_http_url(file_url)):
-                downloaded_url = await self._download_media_url(attachment.download_hint)
-                file_url = downloaded_url or file_url
-            if file_url and not _is_http_url(file_url):
+            if file_url:
+                await cache_candidate(file_url)
+            if not path and attachment.download_hint:
+                async for downloaded_url in self._iter_download_media_urls(attachment.download_hint):
+                    if await cache_candidate(downloaded_url):
+                        break
+            elif not path and file_url and not _is_http_url(file_url):
                 logger.warning(
-                    "[GeWe] Skipping media cache because download did not return an HTTP URL: kind=%s endpoint=%s",
+                    "[GeWe] Skipping media cache because attachment URL is not HTTP: kind=%s",
                     attachment.kind,
-                    attachment.download_hint.endpoint if attachment.download_hint else "",
                 )
+
+            if not path:
                 continue
-            if not file_url:
-                continue
-            try:
-                path = await self._cache_url(file_url, attachment)
-            except Exception:
-                if attachment.download_hint:
-                    try:
-                        fallback_url = await self._download_media_url(attachment.download_hint)
-                        if fallback_url and fallback_url != file_url:
-                            path = await self._cache_url(fallback_url, attachment)
-                        else:
-                            raise
-                    except Exception:
-                        logger.warning("[GeWe] Failed to cache media url=%s", file_url, exc_info=True)
-                        continue
-                else:
-                    logger.warning("[GeWe] Failed to cache media url=%s", file_url, exc_info=True)
-                    continue
             attachment.local_path = path
             media_urls.append(path)
             media_types.append(_media_type_for_attachment(attachment))
         return media_urls, media_types
 
     async def _download_media_url(self, hint: GeweDownloadHint) -> str:
+        async for url in self._iter_download_media_urls(hint):
+            return url
+        return ""
+
+    async def _iter_download_media_urls(self, hint: GeweDownloadHint) -> AsyncIterator[str]:
+        seen_urls: set[str] = set()
         for candidate in [hint, *hint.fallbacks]:
             data = await self._api_post(f"/gewe/v2/api/message/{candidate.endpoint}", candidate.request_body)
             payload = data.get("data") if isinstance(data, dict) else data
@@ -796,14 +811,16 @@ class GeweAdapter(BasePlatformAdapter):
             if not url:
                 url = _find_http_url(data, ("fileUrl", "url", "downloadUrl", "file_url"))
             if url:
-                return url
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    yield url
+                continue
             logger.warning(
                 "[GeWe] Media download returned no HTTP URL: endpoint=%s request=%s response=%s",
                 candidate.endpoint,
                 _download_request_summary(candidate.request_body),
                 _download_response_summary(data),
             )
-        return ""
 
     async def _cache_url(self, url: str, attachment: GeweAttachment) -> str:
         if not self._http_client:

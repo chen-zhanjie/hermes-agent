@@ -654,7 +654,7 @@ async def test_chat_record_cached_file_path_is_injected_into_record_text():
     )
     msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
     adapter = _adapter()
-    adapter._download_media_url = AsyncMock(return_value="https://cdn.example.com/报价.xlsx")
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/报价.xlsx"}})
     adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/documents/doc_abc_报价.xlsx")
 
     media_urls, media_types = await adapter._cache_media(msg)
@@ -755,6 +755,37 @@ async def test_chat_record_image_cache_uses_download_fallback_url():
 
 
 @pytest.mark.asyncio
+async def test_chat_record_image_cache_continues_after_bad_download_url():
+    record_xml = _chat_record_xml(
+        _record_dataitem(
+            2,
+            sourcename="陈可乐",
+            datadesc="[图片]",
+            cdndataurl="image-cdn-file-id",
+            cdndatakey="image-aes",
+            fullmd5size="1234",
+        )
+    )
+    msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(side_effect=[
+        {"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/bad.jpg"}},
+        {"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/good.jpg"}},
+    ])
+    adapter._cache_url = AsyncMock(side_effect=[
+        ValueError("not an image"),
+        "/tmp/hermes/cache/images/img_good.jpg",
+    ])
+
+    media_urls, media_types = await adapter._cache_media(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/images/img_good.jpg"]
+    assert media_types == ["image/jpeg"]
+    assert adapter._cache_url.await_args_list[0].args[0] == "https://cdn.example.com/bad.jpg"
+    assert adapter._cache_url.await_args_list[1].args[0] == "https://cdn.example.com/good.jpg"
+
+
+@pytest.mark.asyncio
 async def test_chat_record_cached_image_path_is_injected_into_record_text():
     record_xml = _chat_record_xml(
         _record_dataitem(
@@ -768,7 +799,7 @@ async def test_chat_record_cached_image_path_is_injected_into_record_text():
     )
     msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
     adapter = _adapter()
-    adapter._download_media_url = AsyncMock(return_value="https://cdn.example.com/image.jpg")
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/image.jpg"}})
     adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/images/img_abc.jpg")
 
     attachment = msg.items[0].attachments[0]
@@ -797,7 +828,7 @@ async def test_cache_media_skips_non_http_cdn_id_when_download_returns_no_url():
     )
     msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
     adapter = _adapter()
-    adapter._download_media_url = AsyncMock(return_value="")
+    adapter._api_post = AsyncMock(return_value={"ret": 500, "msg": "下载图片失败"})
     adapter._cache_url = AsyncMock()
 
     media_urls, media_types = await adapter._cache_media(msg)

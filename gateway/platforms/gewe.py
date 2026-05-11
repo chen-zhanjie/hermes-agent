@@ -1299,18 +1299,26 @@ def _record_image_download_hints(item: ET.Element, app_id: str, suffix: str) -> 
     hints: List[GeweDownloadHint] = []
     image_xml = _record_image_xml(item)
     if image_xml:
-        hints.append(GeweDownloadHint("downloadImage", {"appId": app_id, "xml": image_xml, "type": 2}))
-        hints.append(GeweDownloadHint("downloadImage", {"appId": app_id, "xml": image_xml}))
+        for image_type in _image_download_types(item):
+            hints.append(GeweDownloadHint("downloadImage", {"appId": app_id, "xml": image_xml, "type": image_type}))
     for file_id, aes_key, size in _record_cdn_download_field_candidates(item):
-        hints.append(GeweDownloadHint("downloadCdn", {
-            "appId": app_id,
-            "aesKey": aes_key,
-            "totalSize": str(size or ""),
-            "type": _cdn_download_type("image"),
-            "fileId": file_id,
-            "suffix": suffix,
-        }))
+        for image_type in _image_download_types(item):
+            hints.append(GeweDownloadHint("downloadCdn", {
+                "appId": app_id,
+                "aesKey": aes_key,
+                "totalSize": str(size or ""),
+                "type": str(image_type),
+                "fileId": file_id,
+                "suffix": suffix,
+            }))
     return _dedupe_download_hints(hints)
+
+
+def _image_download_types(item: ET.Element) -> List[int]:
+    preferred = [2, 3, 1]
+    if not _first_text(item, "cdndataurl", "cdnmidimgurl") and _text(item.find("cdnthumburl")):
+        preferred = [3, 2, 1]
+    return preferred
 
 
 def _dedupe_download_hints(hints: List[GeweDownloadHint]) -> List[GeweDownloadHint]:

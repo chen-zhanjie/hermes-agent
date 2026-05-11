@@ -676,6 +676,7 @@ def test_chat_record_image_item_builds_download_image_hint_from_cdn_fields():
             sourcename="陈可乐",
             datadesc="[图片]",
             cdndataurl="full-cdn-file-id",
+            cdndatakey="full-aes",
             cdnthumburl="thumb-cdn-file-id",
             cdnthumbaeskey="thumb-aes",
             thumbfullsize="4567",
@@ -699,7 +700,10 @@ def test_chat_record_image_item_builds_download_image_hint_from_cdn_fields():
     assert 'cdnmidimgurl="full-cdn-file-id"' in hint_xml
     assert 'cdnthumburl="thumb-cdn-file-id"' in hint_xml
     assert 'cdnthumbaeskey="thumb-aes"' in hint_xml
-    assert any(hint.endpoint == "downloadCdn" for hint in attachment.download_hint.fallbacks)
+    fallback_bodies = [hint.request_body for hint in attachment.download_hint.fallbacks]
+    assert {body["type"] for body in fallback_bodies if "xml" in body} >= {1, 3}
+    assert {body["type"] for body in fallback_bodies if body.get("fileId") == "full-cdn-file-id"} == {"1", "2", "3"}
+    assert {body["type"] for body in fallback_bodies if body.get("fileId") == "thumb-cdn-file-id"} == {"1", "2", "3"}
 
 
 @pytest.mark.asyncio
@@ -736,6 +740,7 @@ async def test_chat_record_image_cache_uses_download_fallback_url():
     msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
     adapter = _adapter()
     adapter._api_post = AsyncMock(side_effect=[
+        {"ret": 200, "msg": "操作成功", "data": {}},
         {"ret": 200, "msg": "操作成功", "data": {}},
         {"ret": 200, "msg": "操作成功", "data": {}},
         {"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/image.jpg"}},

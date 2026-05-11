@@ -6370,7 +6370,7 @@ class GatewayRunner:
                         except Exception:
                             pass
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if event.media_urls:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
@@ -6385,6 +6385,11 @@ class GatewayRunner:
                         guessed, _ = _mimetypes.guess_type(path)
                         if guessed:
                             mtype = guessed
+                if not mtype.startswith(("application/", "text/")):
+                    _ext = os.path.splitext(path)[1].lower()
+                    guessed, _ = _mimetypes.guess_type(path)
+                    if guessed:
+                        mtype = guessed
                 if not mtype.startswith(("application/", "text/")):
                     continue
 

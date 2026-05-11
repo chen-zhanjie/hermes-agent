@@ -105,6 +105,7 @@ class GeweAttachment:
     quoted_message_type: str = ""
     needs_download: bool = False
     download_hint: Optional[GeweDownloadHint] = None
+    local_path: str = ""
     raw: Any = None
 
 
@@ -755,6 +756,8 @@ class GeweAdapter(BasePlatformAdapter):
             file_url = attachment.url
             if not file_url and attachment.download_hint:
                 file_url = await self._download_media_url(attachment.download_hint)
+            if file_url and not _is_http_url(file_url) and attachment.download_hint:
+                file_url = await self._download_media_url(attachment.download_hint)
             if not file_url:
                 continue
             try:
@@ -773,6 +776,7 @@ class GeweAdapter(BasePlatformAdapter):
                 else:
                     logger.warning("[GeWe] Failed to cache media url=%s", file_url, exc_info=True)
                     continue
+            attachment.local_path = path
             media_urls.append(path)
             media_types.append(_media_type_for_attachment(attachment))
         return media_urls, media_types
@@ -918,7 +922,7 @@ def _chat_record_items_from_xml(base: NormalizedGeweMessage, xml: str) -> List[N
             text=text if message_type == "text" or _is_text_only_voice_item(item, data_type) else "",
             raw={"record_item": ET.tostring(item, encoding="unicode")},
         )
-        attachment = _record_item_attachment(item, message_type, base.account_id)
+        attachment = _record_item_attachment(item, message_type, base.device_id or base.account_id)
         if attachment:
             normalized.attachments = [attachment]
         items.append(normalized)
@@ -1134,21 +1138,22 @@ def _flatten_attachments(msg: NormalizedGeweMessage) -> List[GeweAttachment]:
 
 
 def _attachment_summary(attachment: GeweAttachment) -> str:
+    local_path = f" 本地路径: {attachment.local_path}" if attachment.local_path else ""
     if attachment.kind == "image":
-        return "[图片]"
+        return f"[图片]{local_path}"
     if attachment.kind == "emoji":
-        return "[表情]"
+        return f"[表情]{local_path}"
     if attachment.kind == "voice":
-        return "[语音]"
+        return f"[语音]{local_path}"
     if attachment.kind == "video":
-        return "[视频]"
+        return f"[视频]{local_path}"
     if attachment.kind == "file":
         name = attachment.file_name or attachment.title or "文件"
         size = f" ({attachment.file_size} bytes)" if attachment.file_size else ""
-        return f"[文件] {name}{size}"
+        return f"[文件] {name}{size}{local_path}"
     if attachment.kind == "link":
         return f"[链接] {attachment.title or attachment.url}"
-    return f"[{attachment.kind}]"
+    return f"[{attachment.kind}]{local_path}"
 
 
 def _media_type_for_attachment(attachment: GeweAttachment) -> str:
@@ -1254,6 +1259,9 @@ def _text(node: Optional[ET.Element]) -> str:
 def _child_text(node: Optional[ET.Element], name: str) -> str:
     return _text(node.find(name)) if node is not None else ""
 
+
+def _is_http_url(value: str) -> bool:
+    return str(value or "").startswith(("http://", "https://"))
 
 def _str(value: Any) -> str:
     return "" if value is None else str(value)

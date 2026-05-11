@@ -1,6 +1,7 @@
 """Tests for the native GeWe v2 callback adapter."""
 
 import asyncio
+from html import escape
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -596,6 +597,75 @@ def test_quote_message_populates_reply_context():
     assert msg.text == "我测试下引用消息"
     assert msg.reply_to_message_id == "7810092927857443194"
     assert msg.reply_to_text == "陈可乐: 发个消息"
+
+
+def _chat_record_xml(*items):
+    record = "<recordinfo>" + "".join(items) + "</recordinfo>"
+    return (
+        "<msg><appmsg><type>19</type><title>聊天记录</title>"
+        f"<recorditem>{escape(record)}</recorditem></appmsg></msg>"
+    )
+
+
+def _record_dataitem(datatype, **fields):
+    body = "".join(f"<{name}>{escape(str(value))}</{name}>" for name, value in fields.items())
+    return f'<dataitem datatype="{datatype}">{body}</dataitem>'
+
+
+def test_chat_record_file_item_uses_device_app_id_for_download_hint():
+    record_xml = _chat_record_xml(
+        _record_dataitem(
+            6,
+            sourcename="陈可乐",
+            datatitle="报价.xlsx",
+            datafmt="xlsx",
+            datasize="1234",
+            cdndataurl="cdn-file-id",
+            cdndatakey="cdn-aes",
+        )
+    )
+
+    msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
+
+    assert msg is not None
+    assert msg.message_type == "chat_record"
+    assert len(msg.items) == 1
+    attachment = msg.items[0].attachments[0]
+    assert attachment.kind == "file"
+    assert attachment.file_name == "报价.xlsx"
+    assert attachment.download_hint is not None
+    assert attachment.download_hint.request_body["appId"] == "wx_app"
+    assert attachment.download_hint.request_body["fileId"] == "cdn-file-id"
+
+
+@pytest.mark.asyncio
+async def test_chat_record_cached_file_path_is_injected_into_record_text():
+    record_xml = _chat_record_xml(
+        _record_dataitem(
+            6,
+            sourcename="陈可乐",
+            datatitle="报价.xlsx",
+            datafmt="xlsx",
+            datasize="1234",
+            cdndataurl="cdn-file-id",
+            cdndatakey="cdn-aes",
+        )
+    )
+    msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
+    adapter = _adapter()
+    adapter._download_media_url = AsyncMock(return_value="https://cdn.example.com/报价.xlsx")
+    adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/documents/doc_abc_报价.xlsx")
+
+    media_urls, media_types = await adapter._cache_media(msg)
+    text = adapter._message_text(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/documents/doc_abc_报价.xlsx"]
+    assert media_types == ["application/octet-stream"]
+    assert "[聊天记录] 1 条" in text
+    assert "陈可乐" in text
+    assert "[文件] 报价.xlsx (1234 bytes)" in text
+    assert "本地路径: /tmp/hermes/cache/documents/doc_abc_报价.xlsx" in text
+
 
 
 def test_emoji_message_builds_image_attachment_from_emoji_xml():

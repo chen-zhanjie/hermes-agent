@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import socket as _socket
 from dataclasses import dataclass, field
@@ -300,6 +301,23 @@ class GeweAdapter(BasePlatformAdapter):
             await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
         return result
 
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        if image_path.startswith(("http://", "https://")):
+            return await self.send_image(chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata)
+        try:
+            image_url = await self._upload_local_file(image_path)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=True)
+        return await self.send_image(chat_id, image_url, caption=caption, reply_to=reply_to, metadata=metadata)
+
     async def send_voice(
         self,
         chat_id: str,
@@ -309,10 +327,14 @@ class GeweAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        if not audio_path.startswith(("http://", "https://")):
-            return SendResult(success=False, error="GeWe voice messages require an http(s) silk voiceUrl")
+        voice_url = audio_path
+        if not voice_url.startswith(("http://", "https://")):
+            try:
+                voice_url = await self._upload_local_file(audio_path)
+            except Exception as exc:
+                return SendResult(success=False, error=str(exc), retryable=True)
 
-        ext = Path(urlsplit(audio_path).path).suffix.lower()
+        ext = Path(urlsplit(voice_url).path).suffix.lower()
         if ext != ".silk":
             return SendResult(success=False, error="GeWe voiceUrl only supports .silk files")
 
@@ -327,7 +349,7 @@ class GeweAdapter(BasePlatformAdapter):
         result = await self._post_message("/gewe/v2/api/message/postVoice", {
             "appId": self._app_id,
             "toWxid": chat_id,
-            "voiceUrl": audio_path,
+            "voiceUrl": voice_url,
             "voiceDuration": voice_duration,
         })
         if result.success and caption:
@@ -343,14 +365,21 @@ class GeweAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        if file_path.startswith(("http://", "https://")):
-            return await self._post_message("/gewe/v2/api/message/postFile", {
-                "appId": self._app_id,
-                "toWxid": chat_id,
-                "fileUrl": file_path,
-                "fileName": file_name or Path(urlsplit(file_path).path).name or "file",
-            })
-        return await self.send(chat_id, f"{caption + chr(10) if caption else ''}[文件] {file_name or Path(file_path).name}: {file_path}")
+        file_url = file_path
+        resolved_name = file_name
+        if not file_url.startswith(("http://", "https://")):
+            try:
+                file_url = await self._upload_local_file(file_path)
+            except Exception as exc:
+                return SendResult(success=False, error=str(exc), retryable=True)
+            resolved_name = resolved_name or Path(file_path).name
+
+        return await self._post_message("/gewe/v2/api/message/postFile", {
+            "appId": self._app_id,
+            "toWxid": chat_id,
+            "fileUrl": file_url,
+            "fileName": resolved_name or Path(urlsplit(file_url).path).name or "file",
+        })
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "group" if chat_id.endswith("@chatroom") else "dm"}
@@ -412,6 +441,37 @@ class GeweAdapter(BasePlatformAdapter):
         for key in (revoke_payload.get("msgId"), revoke_payload.get("newMsgId")):
             if key:
                 self._sent_message_revoke_payloads.pop(str(key), None)
+
+    async def _upload_local_file(self, file_path: str) -> str:
+        if not self._http_client:
+            raise RuntimeError("GeWe HTTP client is not connected")
+        if not self._relay_base_url or not self._relay_app_id or not self._relay_app_token:
+            raise RuntimeError("GeWe local media upload requires GEWE_RELAY_BASE_URL, GEWE_RELAY_APP_ID, and GEWE_RELAY_APP_TOKEN")
+
+        path = Path(file_path).expanduser()
+        if not path.exists() or not path.is_file():
+            raise RuntimeError(f"Media file not found: {file_path}")
+        size = path.stat().st_size
+        max_size = 50 * 1024 * 1024
+        if size > max_size:
+            raise RuntimeError("GeWe local media upload exceeds webhook-router 50MB file limit")
+
+        upload_url = (
+            f"{self._relay_base_url}/apps/{quote(self._relay_app_id, safe='')}/files"
+            f"?token={quote(self._relay_app_token, safe='')}"
+        )
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        with path.open("rb") as file_obj:
+            response = await self._http_client.post(
+                upload_url,
+                files={"file": (path.name, file_obj, mime)},
+            )
+        text = response.text
+        response.raise_for_status()
+        data = json.loads(text) if text else {}
+        if not data.get("ok") or not data.get("path"):
+            raise RuntimeError(f"Webhook-router file upload failed: {data}")
+        return urljoin(f"{self._relay_base_url}/", str(data["path"]).lstrip("/"))
 
     async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not self._http_client:

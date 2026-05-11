@@ -414,13 +414,19 @@ class TestSendGeweMediaDelivery:
             ("cleanup",),
         ]
 
-    def test_local_media_returns_actionable_error(self):
+    def test_local_image_routes_to_gewe_image_file_sender(self):
+        calls = []
+
         class FakeGeweAdapter:
             def __init__(self, _config):
                 self._http_client = None
 
+            async def send_image_file(self, chat_id, image_path):
+                calls.append(("send_image_file", chat_id, image_path))
+                return SimpleNamespace(success=True, message_id="img-file-msg")
+
             async def _cleanup(self):
-                pass
+                calls.append(("cleanup",))
 
         fake_httpx = SimpleNamespace(AsyncClient=lambda **_kwargs: object())
         fake_gewe_module = SimpleNamespace(GeweAdapter=FakeGeweAdapter, check_gewe_requirements=lambda: True)
@@ -435,9 +441,40 @@ class TestSendGeweMediaDelivery:
                 )
             )
 
-        assert "error" in result
-        assert "http(s) URL" in result["error"]
-        assert "local MEDIA paths" in result["error"]
+        assert result["success"] is True
+        assert result["message_id"] == "img-file-msg"
+        assert calls == [("send_image_file", "wxid_current", "/tmp/local.jpg"), ("cleanup",)]
+
+    def test_local_document_routes_to_gewe_document_sender(self):
+        calls = []
+
+        class FakeGeweAdapter:
+            def __init__(self, _config):
+                self._http_client = None
+
+            async def send_document(self, chat_id, file_path):
+                calls.append(("send_document", chat_id, file_path))
+                return SimpleNamespace(success=True, message_id="doc-msg")
+
+            async def _cleanup(self):
+                calls.append(("cleanup",))
+
+        fake_httpx = SimpleNamespace(AsyncClient=lambda **_kwargs: object())
+        fake_gewe_module = SimpleNamespace(GeweAdapter=FakeGeweAdapter, check_gewe_requirements=lambda: True)
+
+        with patch.dict(sys.modules, {"gateway.platforms.gewe": fake_gewe_module, "httpx": fake_httpx}):
+            result = asyncio.run(
+                _send_gewe(
+                    SimpleNamespace(enabled=True, token="tok", extra={"app_id": "wx_app"}),
+                    "wxid_current",
+                    "",
+                    media_files=[("/tmp/report.pdf", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "doc-msg"
+        assert calls == [("send_document", "wxid_current", "/tmp/report.pdf"), ("cleanup",)]
 
 
 class TestSendTelegramMediaDelivery:

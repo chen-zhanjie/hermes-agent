@@ -1751,17 +1751,14 @@ async def _send_gewe(pconfig, chat_id, message, media_files=None):
                 return _error(f"GeWe send failed: {last_result.error}")
 
         for media_path, is_voice in media_files:
-            if not media_path.startswith(("http://", "https://")):
-                return _error(
-                    "GeWe send_message cannot send local MEDIA paths directly. "
-                    "The GeWe postImage/postFile/postVoice APIs require an http(s) URL; "
-                    "upload or expose the file first, then send that URL."
-                )
-
             from urllib.parse import urlsplit
-            ext = os.path.splitext(urlsplit(media_path).path)[1].lower()
+            parsed_path = urlsplit(media_path).path if media_path.startswith(("http://", "https://")) else media_path
+            ext = os.path.splitext(parsed_path)[1].lower()
             if ext in _IMAGE_EXTS:
-                last_result = await adapter.send_image(chat_id, media_path)
+                if media_path.startswith(("http://", "https://")):
+                    last_result = await adapter.send_image(chat_id, media_path)
+                else:
+                    last_result = await adapter.send_image_file(chat_id, media_path)
             elif ext == ".silk" and is_voice:
                 last_result = await adapter.send_voice(chat_id, media_path)
             else:

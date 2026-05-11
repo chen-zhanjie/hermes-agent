@@ -1,6 +1,7 @@
 """Tests for the native GeWe v2 callback adapter."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -200,6 +201,119 @@ async def test_send_image_uses_gewe_img_url_field():
 
 
 @pytest.mark.asyncio
+async def test_upload_local_file_posts_multipart_to_webhook_router(tmp_path):
+    source = tmp_path / "example.jpg"
+    source.write_bytes(b"jpeg-data")
+    adapter = _adapter(relay_base_url="https://hook.yunzxu.com", relay_app_id="macmini-hremes", relay_app_token="secret-token")
+
+    class FakeResponse:
+        text = '{"ok": true, "path": "/files/01j/example.jpg", "size": 9, "filename": "example.jpg"}'
+
+        def raise_for_status(self):
+            pass
+
+    captured = {}
+
+    async def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        uploaded = kwargs["files"]["file"]
+        captured["filename"] = uploaded[0]
+        captured["mime"] = uploaded[2]
+        captured["content"] = uploaded[1].read()
+        return FakeResponse()
+
+    adapter._http_client = SimpleNamespace(post=fake_post)
+
+    public_url = await adapter._upload_local_file(str(source))
+
+    assert public_url == "https://hook.yunzxu.com/files/01j/example.jpg"
+    assert captured["url"] == "https://hook.yunzxu.com/apps/macmini-hremes/files?token=secret-token"
+    assert captured["filename"] == "example.jpg"
+    assert captured["mime"] == "image/jpeg"
+    assert captured["content"] == b"jpeg-data"
+
+
+@pytest.mark.asyncio
+async def test_send_image_file_uploads_local_file_then_posts_img_url(tmp_path):
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"jpeg-data")
+    adapter = _adapter(relay_base_url="https://hook.yunzxu.com", relay_app_id="app", relay_app_token="token")
+    adapter._upload_local_file = AsyncMock(return_value="https://hook.yunzxu.com/files/01j/photo.jpg")
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 459}})
+
+    result = await adapter.send_image_file("wxid_friend", str(source))
+
+    assert result.success is True
+    adapter._upload_local_file.assert_awaited_once_with(str(source))
+    adapter._api_post.assert_awaited_once_with(
+        "/gewe/v2/api/message/postImage",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "imgUrl": "https://hook.yunzxu.com/files/01j/photo.jpg",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_document_uploads_local_file_then_posts_file_url(tmp_path):
+    source = tmp_path / "report.xlsx"
+    source.write_bytes(b"xlsx-data")
+    adapter = _adapter(relay_base_url="https://hook.yunzxu.com", relay_app_id="app", relay_app_token="token")
+    adapter._upload_local_file = AsyncMock(return_value="https://hook.yunzxu.com/files/01j/report.xlsx")
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 460}})
+
+    result = await adapter.send_document("wxid_friend", str(source))
+
+    assert result.success is True
+    adapter._upload_local_file.assert_awaited_once_with(str(source))
+    adapter._api_post.assert_awaited_once_with(
+        "/gewe/v2/api/message/postFile",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "fileUrl": "https://hook.yunzxu.com/files/01j/report.xlsx",
+            "fileName": "report.xlsx",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_voice_uploads_local_silk_then_posts_voice_url(tmp_path):
+    source = tmp_path / "voice.silk"
+    source.write_bytes(b"silk-data")
+    adapter = _adapter(relay_base_url="https://hook.yunzxu.com", relay_app_id="app", relay_app_token="token")
+    adapter._upload_local_file = AsyncMock(return_value="https://hook.yunzxu.com/files/01j/voice.silk")
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 461}})
+
+    result = await adapter.send_voice("wxid_friend", str(source), metadata={"voice_duration_ms": 1200})
+
+    assert result.success is True
+    adapter._upload_local_file.assert_awaited_once_with(str(source))
+    adapter._api_post.assert_awaited_once_with(
+        "/gewe/v2/api/message/postVoice",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "voiceUrl": "https://hook.yunzxu.com/files/01j/voice.silk",
+            "voiceDuration": 1200,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_upload_local_file_requires_relay_credentials(tmp_path):
+    source = tmp_path / "example.jpg"
+    source.write_bytes(b"jpeg-data")
+    adapter = _adapter(relay_base_url="https://hook.yunzxu.com")
+    adapter._http_client = SimpleNamespace()
+
+    with pytest.raises(RuntimeError, match="GEWE_RELAY_BASE_URL"):
+        await adapter._upload_local_file(str(source))
+
+
+@pytest.mark.asyncio
 async def test_send_document_uses_gewe_post_file_fields():
     adapter = _adapter()
     adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 457}})
@@ -245,14 +359,16 @@ async def test_send_document_honors_explicit_file_name():
 
 
 @pytest.mark.asyncio
-async def test_send_document_local_path_falls_back_to_text():
-    adapter = _adapter()
-    adapter.send = AsyncMock(return_value=type("Result", (), {"success": True, "message_id": "txt"})())
+async def test_send_document_local_path_reports_upload_configuration_error(tmp_path):
+    source = tmp_path / "report.xlsx"
+    source.write_bytes(b"xlsx-data")
+    adapter = _adapter(relay_base_url="https://hook.yunzxu.com")
+    adapter._http_client = SimpleNamespace()
 
-    result = await adapter.send_document("wxid_friend", "/tmp/report.xlsx")
+    result = await adapter.send_document("wxid_friend", str(source))
 
-    assert result.success is True
-    adapter.send.assert_awaited_once_with("wxid_friend", "[文件] report.xlsx: /tmp/report.xlsx")
+    assert result.success is False
+    assert "GEWE_RELAY_BASE_URL" in result.error
 
 
 @pytest.mark.asyncio

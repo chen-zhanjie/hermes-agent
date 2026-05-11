@@ -76,3 +76,34 @@ async def test_help_keeps_non_telegram_slash_command_mentions_unchanged(monkeypa
     )
 
     assert "`/Linear`" in result
+
+
+@pytest.mark.asyncio
+async def test_commands_respects_chinese_language(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    from agent import i18n
+
+    i18n.reset_language_cache()
+    monkeypatch.setattr("agent.skill_commands.get_skill_commands", lambda: {})
+
+    result = await _make_runner()._handle_commands_command(
+        _make_event("/commands", Platform.GEWE)
+    )
+
+    assert "📚 **命令**" in result
+    assert "开始一个新会话" in result
+    assert "别名" in result
+    assert "Start a new session" not in result
+
+
+def test_gateway_help_lines_can_render_chinese(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    from agent import i18n
+    from hermes_cli.commands import gateway_help_lines
+
+    i18n.reset_language_cache()
+    lines = gateway_help_lines(lang="zh")
+
+    assert any("开始一个新会话" in line for line in lines)
+    assert any("别名" in line for line in lines)
+    assert not any("Start a new session" in line for line in lines)

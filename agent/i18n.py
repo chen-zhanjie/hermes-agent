@@ -1,10 +1,10 @@
 """Lightweight internationalization (i18n) for Hermes static user-facing messages.
 
-Scope (thin slice, by design): only the highest-impact static strings shown
-to the user by Hermes itself -- approval prompts, a handful of gateway slash
-command replies, restart-drain notices.  Agent-generated output, log lines,
-error tracebacks, tool outputs, and slash-command descriptions all stay in
-English.
+Scope (thin slice, by design): the highest-impact static strings shown
+to the user by Hermes itself -- approval prompts, gateway slash command replies,
+restart-drain notices, and command/help menu chrome.  Agent-generated output, log lines, error tracebacks, and tool outputs stay
+out of scope. Gateway slash-command help/menu text is localized where it uses
+this catalog or the command registry translation table.
 
 Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
 catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or

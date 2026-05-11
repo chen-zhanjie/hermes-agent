@@ -207,6 +207,133 @@ COMMAND_REGISTRY: list[CommandDef] = [
 ]
 
 
+_COMMAND_DESCRIPTION_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "zh": {
+        "new": "开始一个新会话（新的会话 ID 和历史记录）",
+        "topic": "启用或查看 Telegram 私聊话题会话",
+        "clear": "清屏并开始一个新会话",
+        "redraw": "强制重绘界面（修复终端显示错位）",
+        "history": "显示对话历史",
+        "save": "保存当前对话",
+        "retry": "重试上一条消息（重新发送给代理）",
+        "undo": "移除上一轮用户/助手对话",
+        "title": "设置当前会话标题",
+        "branch": "从当前会话创建分支（探索另一条路径）",
+        "compress": "手动压缩对话上下文",
+        "rollback": "列出或恢复文件系统检查点",
+        "snapshot": "创建或恢复 Hermes 配置/状态快照",
+        "stop": "停止所有正在运行的后台进程",
+        "approve": "批准一个待确认的危险命令",
+        "deny": "拒绝一个待确认的危险命令",
+        "background": "在后台运行一个提示词",
+        "agents": "显示活跃代理和正在运行的任务",
+        "queue": "把提示词排到下一轮（不中断当前任务）",
+        "steer": "在下一次工具调用后注入消息（不中断）",
+        "goal": "设置一个持续目标，Hermes 会跨轮次推进直到完成",
+        "status": "显示会话信息",
+        "profile": "显示当前配置档名称和主目录",
+        "sethome": "把当前聊天设为主页频道",
+        "resume": "恢复一个之前命名过的会话",
+        "sessions": "浏览并恢复历史会话",
+        "config": "显示当前配置",
+        "model": "切换本会话使用的模型",
+        "gquota": "显示 Google Gemini Code Assist 配额用量",
+        "personality": "设置预置人格",
+        "statusbar": "切换上下文/模型状态栏",
+        "verbose": "切换工具进度显示：关闭 -> 新工具 -> 全部 -> 详细",
+        "footer": "切换最终回复中的网关运行元数据页脚",
+        "yolo": "切换 YOLO 模式（跳过所有危险命令审批）",
+        "reasoning": "管理推理强度和推理显示",
+        "fast": "切换快速模式（OpenAI 优先处理 / Anthropic Fast Mode）",
+        "skin": "显示或切换显示皮肤/主题",
+        "indicator": "选择 TUI 忙碌指示器样式",
+        "voice": "切换语音模式",
+        "busy": "控制 Hermes 忙碌时按回车的行为",
+        "tools": "管理工具：/tools [list|disable|enable] [name...]",
+        "toolsets": "列出可用工具集",
+        "skills": "搜索、安装、查看或管理技能",
+        "cron": "管理定时任务",
+        "curator": "后台技能维护（状态、运行、固定、归档、列出归档）",
+        "kanban": "多配置档协作看板（任务、链接、评论）",
+        "reload": "把 .env 变量重新加载到当前会话",
+        "reload-mcp": "从配置重新加载 MCP 服务器",
+        "reload-skills": "重新扫描 ~/.hermes/skills/ 中新增或移除的技能",
+        "browser": "通过 CDP 连接浏览器工具到当前 Chrome",
+        "plugins": "列出已安装插件及其状态",
+        "commands": "分页浏览所有命令和技能",
+        "help": "显示可用命令",
+        "restart": "等待活跃任务结束后优雅重启网关",
+        "usage": "显示当前会话的 token 用量和速率限制",
+        "insights": "显示用量洞察和分析",
+        "platforms": "显示网关/消息平台状态",
+        "copy": "复制上一条助手回复到剪贴板",
+        "paste": "从剪贴板附加图片",
+        "image": "为下一条提示词附加本地图片文件",
+        "update": "把 Hermes Agent 更新到最新版本",
+        "debug": "上传调试报告（系统信息 + 日志）并生成分享链接",
+        "quit": "退出 CLI",
+    },
+}
+
+_COMMAND_ARGS_HINT_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "zh": {
+        "new": "[名称]",
+        "topic": "[关闭|帮助|会话ID]",
+        "title": "[名称]",
+        "branch": "[名称]",
+        "compress": "[关注主题]",
+        "rollback": "[编号]",
+        "snapshot": "[create|restore <id>|prune]",
+        "approve": "[会话|永久]",
+        "background": "<提示词>",
+        "queue": "<提示词>",
+        "steer": "<提示词>",
+        "goal": "[目标文本 | pause | resume | clear | status]",
+        "resume": "[名称]",
+        "model": "[模型] [--provider 名称] [--global]",
+        "personality": "[名称]",
+        "footer": "[on|off|status]",
+        "reasoning": "[级别|show|hide]",
+        "fast": "[normal|fast|status]",
+        "skin": "[名称]",
+        "indicator": "[kaomoji|emoji|unicode|ascii]",
+        "voice": "[on|off|tts|status]",
+        "busy": "[queue|steer|interrupt|status]",
+        "tools": "[list|disable|enable] [名称...]",
+        "cron": "[子命令]",
+        "curator": "[子命令]",
+        "kanban": "[子命令]",
+        "browser": "[connect|disconnect|status]",
+        "commands": "[页码]",
+        "insights": "[天数]",
+        "copy": "[编号]",
+        "image": "<路径>",
+    },
+}
+
+
+def _command_language(lang: str | None = None) -> str:
+    try:
+        from agent.i18n import get_language, _normalize_lang
+        return _normalize_lang(lang) if lang else get_language()
+    except Exception:
+        return "en"
+
+
+def _localized_command_description(cmd: CommandDef, lang: str | None = None) -> str:
+    language = _command_language(lang)
+    return _COMMAND_DESCRIPTION_TRANSLATIONS.get(language, {}).get(cmd.name, cmd.description)
+
+
+def _localized_args_hint(cmd: CommandDef, lang: str | None = None) -> str:
+    language = _command_language(lang)
+    return _COMMAND_ARGS_HINT_TRANSLATIONS.get(language, {}).get(cmd.name, cmd.args_hint)
+
+
+def _localized_alias_label(lang: str | None = None) -> str:
+    return "别名" if _command_language(lang) == "zh" else "alias"
+
+
 # ---------------------------------------------------------------------------
 # Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
 # ---------------------------------------------------------------------------
@@ -409,22 +536,23 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
-def gateway_help_lines() -> list[str]:
+def gateway_help_lines(lang: str | None = None) -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        args = f" {cmd.args_hint}" if cmd.args_hint else ""
+        args_hint = _localized_args_hint(cmd, lang)
+        args = f" {args_hint}" if args_hint else ""
         alias_parts: list[str] = []
         for a in cmd.aliases:
             # Skip internal aliases like reload_mcp (underscore variant)
             if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
                 continue
             alias_parts.append(f"`/{a}`")
-        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        alias_note = f" ({_localized_alias_label(lang)}: {', '.join(alias_parts)})" if alias_parts else ""
+        lines.append(f"`/{cmd.name}{args}` -- {_localized_command_description(cmd, lang)}{alias_note}")
     return lines
 
 
@@ -481,7 +609,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
             continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            result.append((tg_name, _localized_command_description(cmd)))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue

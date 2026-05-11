@@ -944,6 +944,33 @@ async def test_voice_message_download_uses_cdn_fallback_after_download_voice_fai
 
 
 @pytest.mark.asyncio
+async def test_voice_message_retries_download_voice_when_gewe_reports_not_ready():
+    voice_xml = """<msg><voicemsg voicelength="1039" length="1267"
+      aeskey="voice-aes" voiceurl="voice-file-id" fromusername="wxid_sender" /></msg>"""
+    not_ready_detail = (
+        '{"ret":0,"msg":"success","data":{"msgId":0,"offset":0,"length":0,'
+        '"voiceLength":0,"data":{"iLen":0},"endFlag":0,'
+        '"BaseResponse":{"ret":-2,"errMsg":{}},"cancelFlag":0,"newMsgId":0}}'
+    )
+    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml))
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(side_effect=[
+        {"ret": 500, "msg": "语音下载失败", "data": {"code": "-2", "detail": not_ready_detail}},
+        {"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/voice.silk"}},
+    ])
+    adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/audio/audio_abc.silk")
+
+    with patch("gateway.platforms.gewe.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        media_urls, media_types = await adapter._cache_media(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/audio/audio_abc.silk"]
+    assert media_types == ["audio/silk"]
+    assert adapter._api_post.await_args_list[0].args[0].endswith("/downloadVoice")
+    assert adapter._api_post.await_args_list[1].args[0].endswith("/downloadVoice")
+    sleep_mock.assert_awaited_once_with(0.8)
+
+
+@pytest.mark.asyncio
 async def test_voice_message_download_continues_across_cdn_suffix_fallbacks():
     voice_xml = """<msg><voicemsg voicelength="1039" length="1267"
       aeskey="voice-aes" voiceurl="voice-file-id" fromusername="wxid_sender" /></msg>"""

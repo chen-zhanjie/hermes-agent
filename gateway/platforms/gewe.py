@@ -76,6 +76,7 @@ GEWE_SILK_DECODER_ENV = "GEWE_SILK_DECODER"
 SUPPORTED_INBOUND_MODES = {"direct-callback", "relay-callback", "relay-sse"}
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _MEDIA_ONLY_PLACEHOLDERS = {"[图片]", "[表情]"}
+_GEWE_VOICE_DOWNLOAD_RETRY_DELAYS = (0.8, 1.6, 2.4)
 
 
 def check_gewe_requirements() -> bool:
@@ -809,22 +810,35 @@ class GeweAdapter(BasePlatformAdapter):
     async def _iter_download_media_urls(self, hint: GeweDownloadHint) -> AsyncIterator[str]:
         seen_urls: set[str] = set()
         for candidate in [hint, *hint.fallbacks]:
-            data = await self._api_post(f"/gewe/v2/api/message/{candidate.endpoint}", candidate.request_body)
-            payload = data.get("data") if isinstance(data, dict) else data
-            url = _find_http_url(payload, ("fileUrl", "url", "downloadUrl", "file_url"))
-            if not url:
-                url = _find_http_url(data, ("fileUrl", "url", "downloadUrl", "file_url"))
-            if url:
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    yield url
-                continue
-            logger.warning(
-                "[GeWe] Media download returned no HTTP URL: endpoint=%s request=%s response=%s",
-                candidate.endpoint,
-                _download_request_summary(candidate.request_body),
-                _download_response_summary(data),
-            )
+            retry_delays = list(_GEWE_VOICE_DOWNLOAD_RETRY_DELAYS) if candidate.endpoint == "downloadVoice" else []
+            while True:
+                data = await self._api_post(f"/gewe/v2/api/message/{candidate.endpoint}", candidate.request_body)
+                payload = data.get("data") if isinstance(data, dict) else data
+                url = _find_http_url(payload, ("fileUrl", "url", "downloadUrl", "file_url"))
+                if not url:
+                    url = _find_http_url(data, ("fileUrl", "url", "downloadUrl", "file_url"))
+                if url:
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        yield url
+                    break
+                if retry_delays and _gewe_voice_download_not_ready(data):
+                    delay = retry_delays.pop(0)
+                    logger.info(
+                        "[GeWe] Voice media is not ready yet; retrying downloadVoice in %.1fs: request=%s response=%s",
+                        delay,
+                        _download_request_summary(candidate.request_body),
+                        _download_response_summary(data),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.warning(
+                    "[GeWe] Media download returned no HTTP URL: endpoint=%s request=%s response=%s",
+                    candidate.endpoint,
+                    _download_request_summary(candidate.request_body),
+                    _download_response_summary(data),
+                )
+                break
 
     async def _cache_url(self, url: str, attachment: GeweAttachment) -> str:
         if not self._http_client:
@@ -1686,6 +1700,34 @@ def _download_response_summary(value: Any) -> Any:
                 summary[key] = _value_shape(nested)
         return summary
     return _value_shape(value)
+
+
+def _gewe_voice_download_not_ready(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    data = value.get("data")
+    if not isinstance(data, dict):
+        return False
+    code = _str(data.get("code") or value.get("code")).strip()
+    detail = _str(data.get("detail"))
+    if code == "-2":
+        return True
+    if not detail:
+        return False
+    try:
+        detail_data = json.loads(detail)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(detail_data, dict):
+        return False
+    nested = detail_data.get("data") if isinstance(detail_data.get("data"), dict) else {}
+    base_response = nested.get("BaseResponse") if isinstance(nested.get("BaseResponse"), dict) else {}
+    ret = _str(base_response.get("ret") or detail_data.get("ret")).strip()
+    length = _int(nested.get("length")) or 0
+    voice_length = _int(nested.get("voiceLength")) or 0
+    payload_data = nested.get("data") if isinstance(nested.get("data"), dict) else {}
+    inner_len = _int(payload_data.get("iLen")) or 0
+    return ret == "-2" and length == 0 and voice_length == 0 and inner_len == 0
 
 
 def _download_response_data_summary(value: Dict[str, Any]) -> Dict[str, Any]:

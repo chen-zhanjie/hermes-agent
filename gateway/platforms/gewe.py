@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from html import unescape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit
 from xml.etree import ElementTree as ET
 
 try:
@@ -293,7 +293,41 @@ class GeweAdapter(BasePlatformAdapter):
         result = await self._post_message("/gewe/v2/api/message/postImage", {
             "appId": self._app_id,
             "toWxid": chat_id,
-            "imageUrl": image_url,
+            "imgUrl": image_url,
+        })
+        if result.success and caption:
+            await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+        return result
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        if not audio_path.startswith(("http://", "https://")):
+            return SendResult(success=False, error="GeWe voice messages require an http(s) silk voiceUrl")
+
+        ext = Path(urlsplit(audio_path).path).suffix.lower()
+        if ext != ".silk":
+            return SendResult(success=False, error="GeWe voiceUrl only supports .silk files")
+
+        duration = kwargs.get("voice_duration_ms") or kwargs.get("duration_ms")
+        if duration is None and metadata:
+            duration = metadata.get("voice_duration_ms") or metadata.get("duration_ms")
+        try:
+            voice_duration = int(duration or 0)
+        except (TypeError, ValueError):
+            voice_duration = 0
+
+        result = await self._post_message("/gewe/v2/api/message/postVoice", {
+            "appId": self._app_id,
+            "toWxid": chat_id,
+            "voiceUrl": audio_path,
+            "voiceDuration": voice_duration,
         })
         if result.success and caption:
             await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
@@ -313,7 +347,7 @@ class GeweAdapter(BasePlatformAdapter):
                 "appId": self._app_id,
                 "toWxid": chat_id,
                 "fileUrl": file_path,
-                "fileName": file_name or Path(file_path).name or "file",
+                "fileName": file_name or Path(urlsplit(file_path).path).name or "file",
             })
         return await self.send(chat_id, f"{caption + chr(10) if caption else ''}[文件] {file_name or Path(file_path).name}: {file_path}")
 

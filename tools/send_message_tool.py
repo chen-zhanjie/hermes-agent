@@ -41,8 +41,9 @@ _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
-_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".silk"}
 _VOICE_EXTS = {".ogg", ".opus"}
+_CURRENT_SESSION_TARGET_ALIASES = frozenset({"current", "origin", "here", "this", "same", "chat", "conversation"})
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
@@ -120,8 +121,10 @@ SEND_MESSAGE_SCHEMA = {
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "If this tool is called from an active messaging gateway conversation and "
+        "the user asks to send back here/current/origin, omit target or use target='current'. "
+        "A bare platform name still means that platform's home channel unless it is "
+        "the same platform as the current chat, where it resolves to this chat."
     ),
     "parameters": {
         "type": "object",
@@ -133,7 +136,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Optional in gateway sessions: omit it, or use 'current'/'origin'/'here', to send to the chat that triggered this turn. Format: 'platform' (uses home channel, except same-platform gateway sessions resolve to the current chat), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'current', 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -164,23 +167,74 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _get_current_session_target(preferred_platform: Optional[str] = None) -> Optional[dict]:
+    """Return the active gateway chat target for this tool call, if any."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None
+
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
+    if not platform or platform == "local" or not chat_id:
+        return None
+    if preferred_platform and platform != preferred_platform:
+        return None
+    return {"platform": platform, "chat_id": chat_id, "thread_id": thread_id}
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
-    target = args.get("target", "")
+    target = str(args.get("target") or "").strip()
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    if not message:
+        return tool_error("'message' is required when action='send'")
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
+    target_ref = None
+    is_explicit = False
+    used_current_session = False
 
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    target_lower = target.lower()
+    if not target or target_lower in _CURRENT_SESSION_TARGET_ALIASES:
+        current_target = _get_current_session_target()
+        if not current_target:
+            return json.dumps({
+                "error": "No current messaging chat is available for send_message. "
+                "Specify a target like 'telegram:CHAT_ID' or call from a gateway conversation."
+            })
+        platform_name = current_target["platform"]
+        chat_id = current_target["chat_id"]
+        thread_id = current_target.get("thread_id")
+        is_explicit = True
+        used_current_session = True
     else:
-        is_explicit = False
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+
+        if target_ref and target_ref.lower() in _CURRENT_SESSION_TARGET_ALIASES:
+            current_target = _get_current_session_target(platform_name)
+            if not current_target:
+                return json.dumps({
+                    "error": f"Target '{platform_name}:{target_ref}' only works from an active {platform_name} gateway chat. "
+                    f"Specify a concrete target like '{platform_name}:CHAT_ID' instead."
+                })
+            chat_id = current_target["chat_id"]
+            thread_id = current_target.get("thread_id")
+            is_explicit = True
+            used_current_session = True
+        elif target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        else:
+            current_target = _get_current_session_target(platform_name)
+            if current_target:
+                chat_id = current_target["chat_id"]
+                thread_id = current_target.get("thread_id")
+                is_explicit = True
+                used_current_session = True
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -286,7 +340,9 @@ def _handle_send(args):
                 force_document=force_document_attachments,
             )
         )
-        if used_home_channel and isinstance(result, dict) and result.get("success"):
+        if used_current_session and isinstance(result, dict) and result.get("success"):
+            result["note"] = f"Sent to current {platform_name} chat (chat_id: {chat_id})"
+        elif used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
         # Mirror the sent message into the target's gateway session
@@ -1684,15 +1740,40 @@ async def _send_gewe(pconfig, chat_id, message, media_files=None):
     except ImportError:
         return {"error": "GeWe adapter not available."}
 
+    media_files = media_files or []
     adapter = GeweAdapter(pconfig)
     adapter._http_client = __import__("httpx").AsyncClient(timeout=30.0, follow_redirects=True)
     try:
-        if media_files:
-            return _error("GeWe send_message media delivery currently requires URL-based image/file inputs.")
-        result = await adapter.send(chat_id, message)
-        if not result.success:
-            return _error(f"GeWe send failed: {result.error}")
-        return {"success": True, "platform": "gewe", "chat_id": chat_id, "message_id": result.message_id}
+        last_result = None
+        if message.strip():
+            last_result = await adapter.send(chat_id, message)
+            if not last_result.success:
+                return _error(f"GeWe send failed: {last_result.error}")
+
+        for media_path, is_voice in media_files:
+            if not media_path.startswith(("http://", "https://")):
+                return _error(
+                    "GeWe send_message cannot send local MEDIA paths directly. "
+                    "The GeWe postImage/postFile/postVoice APIs require an http(s) URL; "
+                    "upload or expose the file first, then send that URL."
+                )
+
+            from urllib.parse import urlsplit
+            ext = os.path.splitext(urlsplit(media_path).path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                last_result = await adapter.send_image(chat_id, media_path)
+            elif ext == ".silk" and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path)
+
+            if not last_result.success:
+                return _error(f"GeWe media send failed: {last_result.error}")
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+        return {"success": True, "platform": "gewe", "chat_id": chat_id, "message_id": last_result.message_id}
     except Exception as e:
         return _error(f"GeWe send failed: {e}")
     finally:

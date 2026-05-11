@@ -181,6 +181,57 @@ def test_gewe_send_success_accepts_ret_200_operation_success():
     assert _gewe_ok({"ret": 200, "msg": "操作成功", "data": {"msgId": 123}}) is True
 
 
+@pytest.mark.asyncio
+async def test_send_image_uses_gewe_img_url_field():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 456}})
+
+    result = await adapter.send_image("wxid_friend", "https://cdn.example.com/pic.jpg")
+
+    assert result.success is True
+    adapter._api_post.assert_awaited_once_with(
+        "/gewe/v2/api/message/postImage",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "imgUrl": "https://cdn.example.com/pic.jpg",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_voice_requires_http_silk_url_and_posts_voice_duration():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 789}})
+
+    result = await adapter.send_voice(
+        "wxid_friend",
+        "https://cdn.example.com/voice.silk",
+        metadata={"voice_duration_ms": "2000"},
+    )
+
+    assert result.success is True
+    adapter._api_post.assert_awaited_once_with(
+        "/gewe/v2/api/message/postVoice",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "voiceUrl": "https://cdn.example.com/voice.silk",
+            "voiceDuration": 2000,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_voice_rejects_non_silk_url():
+    adapter = _adapter()
+
+    result = await adapter.send_voice("wxid_friend", "https://cdn.example.com/voice.mp3")
+
+    assert result.success is False
+    assert ".silk" in result.error
+
+
 def test_v2_private_text_normalizes_sender_and_peer():
     msg = normalize_gewe_callback(_gewe_payload(content="你好"))
 

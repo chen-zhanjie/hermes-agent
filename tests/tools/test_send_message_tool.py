@@ -26,6 +26,7 @@ from tools.send_message_tool import (
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
+    _send_gewe,
     _send_signal,
     _send_telegram,
     _send_to_platform,
@@ -78,6 +79,128 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_gewe_bare_target_in_gewe_session_uses_current_chat(self):
+        gewe_cfg = SimpleNamespace(enabled=True, token="tok", extra={"app_id": "wx_app"})
+        config = SimpleNamespace(
+            platforms={Platform.GEWE: gewe_cfg},
+            get_home_channel=MagicMock(return_value=None),
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.session_context.get_session_env") as get_session_env_mock, \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            get_session_env_mock.side_effect = lambda name, default="": {
+                "HERMES_SESSION_PLATFORM": "gewe",
+                "HERMES_SESSION_CHAT_ID": "wxid_current",
+                "HERMES_SESSION_USER_ID": "wxid_user",
+            }.get(name, default)
+
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "gewe",
+                        "message": "发回当前会话",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["note"] == "Sent to current gewe chat (chat_id: wxid_current)"
+        config.get_home_channel.assert_not_called()
+        send_mock.assert_awaited_once_with(
+            Platform.GEWE,
+            gewe_cfg,
+            "wxid_current",
+            "发回当前会话",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_current_target_alias_uses_session_thread(self):
+        telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=MagicMock(return_value=None),
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.session_context.get_session_env") as get_session_env_mock, \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            get_session_env_mock.side_effect = lambda name, default="": {
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_CHAT_ID": "-1001",
+                "HERMES_SESSION_THREAD_ID": "17585",
+            }.get(name, default)
+
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "current",
+                        "message": "thread reply",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        config.get_home_channel.assert_not_called()
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "thread reply",
+            thread_id="17585",
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_bare_other_platform_still_uses_home_channel(self):
+        home = SimpleNamespace(chat_id="-1001")
+        config, telegram_cfg = _make_config()
+        config.get_home_channel = MagicMock(return_value=home)
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.session_context.get_session_env") as get_session_env_mock, \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            get_session_env_mock.side_effect = lambda name, default="": {
+                "HERMES_SESSION_PLATFORM": "gewe",
+                "HERMES_SESSION_CHAT_ID": "wxid_current",
+            }.get(name, default)
+
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "send to telegram home",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["note"] == "Sent to telegram home channel (chat_id: -1001)"
+        config.get_home_channel.assert_called_once_with(Platform.TELEGRAM)
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "send to telegram home",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
@@ -241,6 +364,80 @@ class TestSendMessageTool:
         assert "error" in result
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
+
+
+class TestSendGeweMediaDelivery:
+    def test_url_image_routes_to_gewe_image_sender(self):
+        calls = []
+
+        class FakeGeweAdapter:
+            def __init__(self, _config):
+                self._http_client = None
+
+            async def send(self, chat_id, message):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="text-msg")
+
+            async def send_image(self, chat_id, image_url):
+                calls.append(("send_image", chat_id, image_url))
+                return SimpleNamespace(success=True, message_id="img-msg")
+
+            async def send_document(self, chat_id, file_path):
+                calls.append(("send_document", chat_id, file_path))
+                return SimpleNamespace(success=True, message_id="doc-msg")
+
+            async def send_voice(self, chat_id, audio_path):
+                calls.append(("send_voice", chat_id, audio_path))
+                return SimpleNamespace(success=True, message_id="voice-msg")
+
+            async def _cleanup(self):
+                calls.append(("cleanup",))
+
+        fake_httpx = SimpleNamespace(AsyncClient=lambda **_kwargs: object())
+        fake_gewe_module = SimpleNamespace(GeweAdapter=FakeGeweAdapter, check_gewe_requirements=lambda: True)
+
+        with patch.dict(sys.modules, {"gateway.platforms.gewe": fake_gewe_module, "httpx": fake_httpx}):
+            result = asyncio.run(
+                _send_gewe(
+                    SimpleNamespace(enabled=True, token="tok", extra={"app_id": "wx_app"}),
+                    "wxid_current",
+                    "图片来了",
+                    media_files=[("https://cdn.example.com/pic.jpg", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "img-msg"
+        assert calls == [
+            ("send", "wxid_current", "图片来了"),
+            ("send_image", "wxid_current", "https://cdn.example.com/pic.jpg"),
+            ("cleanup",),
+        ]
+
+    def test_local_media_returns_actionable_error(self):
+        class FakeGeweAdapter:
+            def __init__(self, _config):
+                self._http_client = None
+
+            async def _cleanup(self):
+                pass
+
+        fake_httpx = SimpleNamespace(AsyncClient=lambda **_kwargs: object())
+        fake_gewe_module = SimpleNamespace(GeweAdapter=FakeGeweAdapter, check_gewe_requirements=lambda: True)
+
+        with patch.dict(sys.modules, {"gateway.platforms.gewe": fake_gewe_module, "httpx": fake_httpx}):
+            result = asyncio.run(
+                _send_gewe(
+                    SimpleNamespace(enabled=True, token="tok", extra={"app_id": "wx_app"}),
+                    "wxid_current",
+                    "",
+                    media_files=[("/tmp/local.jpg", False)],
+                )
+            )
+
+        assert "error" in result
+        assert "http(s) URL" in result["error"]
+        assert "local MEDIA paths" in result["error"]
 
 
 class TestSendTelegramMediaDelivery:

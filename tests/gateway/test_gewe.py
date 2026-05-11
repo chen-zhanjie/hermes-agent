@@ -1,7 +1,14 @@
 """Tests for the native GeWe v2 callback adapter."""
 
 from gateway.config import PlatformConfig
-from gateway.platforms.gewe import GeweAdapter, _gewe_ok, normalize_gewe_callback
+from gateway.platforms.base import MessageType
+from gateway.platforms.gewe import (
+    GeweAdapter,
+    _gewe_ok,
+    _media_type_for_attachment,
+    _to_hermes_type,
+    normalize_gewe_callback,
+)
 
 
 def _gewe_payload(**overrides):
@@ -181,6 +188,37 @@ def test_quote_message_populates_reply_context():
     assert msg.text == "我测试下引用消息"
     assert msg.reply_to_message_id == "7810092927857443194"
     assert msg.reply_to_text == "陈可乐: 发个消息"
+
+
+def test_emoji_message_builds_image_attachment_from_emoji_xml():
+    emoji_xml = """<msg><emoji md5="emoji-md5" len="2048"
+      cdnurl="https://emoji.example.com/e.webp" thumburl="https://emoji.example.com/t.png"
+      aeskey="emoji-aes" /></msg>"""
+    msg = normalize_gewe_callback(_gewe_payload(msgType="EMOJI", content=emoji_xml))
+
+    assert msg is not None
+    assert msg.message_type == "emoji"
+    assert len(msg.attachments) == 1
+    attachment = msg.attachments[0]
+    assert attachment.kind == "emoji"
+    assert attachment.url == "https://emoji.example.com/e.webp"
+    assert attachment.thumb_url == "https://emoji.example.com/t.png"
+    assert attachment.md5 == "emoji-md5"
+    assert attachment.file_size == 2048
+    assert attachment.file_ext == "webp"
+    assert attachment.download_hint is not None
+    assert attachment.download_hint.endpoint == "downloadCdn"
+    assert attachment.download_hint.request_body["type"] == "2"
+    assert _to_hermes_type(msg.message_type) == MessageType.PHOTO
+    assert _media_type_for_attachment(attachment).startswith("image/")
+
+
+def test_emoji_summary_is_human_readable():
+    msg = normalize_gewe_callback(_gewe_payload(msgType="EMOJI", content='<msg><emoji md5="x" /></msg>'))
+    adapter = _adapter()
+
+    assert msg is not None
+    assert adapter._message_text(msg) == "[表情]"
 
 
 def test_voice_message_builds_download_hint_from_voiceurl():

@@ -516,8 +516,19 @@ class GeweAdapter(BasePlatformAdapter):
             try:
                 path = await self._cache_url(file_url, attachment)
             except Exception:
-                logger.warning("[GeWe] Failed to cache media url=%s", file_url, exc_info=True)
-                continue
+                if attachment.download_hint:
+                    try:
+                        fallback_url = await self._download_media_url(attachment.download_hint)
+                        if fallback_url and fallback_url != file_url:
+                            path = await self._cache_url(fallback_url, attachment)
+                        else:
+                            raise
+                    except Exception:
+                        logger.warning("[GeWe] Failed to cache media url=%s", file_url, exc_info=True)
+                        continue
+                else:
+                    logger.warning("[GeWe] Failed to cache media url=%s", file_url, exc_info=True)
+                    continue
             media_urls.append(path)
             media_types.append(_media_type_for_attachment(attachment))
         return media_urls, media_types
@@ -535,8 +546,8 @@ class GeweAdapter(BasePlatformAdapter):
         response = await self._http_client.get(url)
         response.raise_for_status()
         data = response.content
-        if attachment.kind == "image":
-            return cache_image_from_bytes(data, _ext(attachment, ".jpg"))
+        if attachment.kind in {"image", "emoji"}:
+            return cache_image_from_bytes(data, _ext(attachment, ".gif" if attachment.kind == "emoji" else ".jpg"))
         if attachment.kind == "voice":
             return cache_audio_from_bytes(data, _ext(attachment, ".amr"))
         if attachment.kind == "video":
@@ -623,6 +634,9 @@ def _attachments_from_xml(message_type: str, xml: str, app_id: str) -> List[Gewe
     appmsg = root.find(".//appmsg")
     if appmsg is not None:
         return [_appmsg_attachment(appmsg, xml, app_id, message_type)]
+    emoji = root.find(".//emoji")
+    if emoji is not None:
+        return [_emoji_attachment(emoji, xml, app_id)]
     img = root.find(".//img")
     if img is not None:
         return [_cdn_attachment("image", img, xml, app_id)]
@@ -704,6 +718,48 @@ def _cdn_attachment(kind: str, source: ET.Element, xml: str, app_id: str) -> Gew
         duration_seconds=_duration_seconds(source.attrib.get("playlength") or source.attrib.get("voicelength")),
     )
     return _with_download_hint(attachment, xml, app_id)
+
+
+def _emoji_attachment(source: ET.Element, xml: str, app_id: str) -> GeweAttachment:
+    direct_url = _str(
+        source.attrib.get("cdnurl")
+        or source.attrib.get("thumburl")
+        or source.attrib.get("externurl")
+        or source.attrib.get("encrypturl")
+    )
+    attachment = GeweAttachment(
+        kind="emoji",
+        title="表情",
+        file_ext=_emoji_file_ext(source),
+        file_size=_int(
+            source.attrib.get("len")
+            or source.attrib.get("cdnthumblength")
+            or source.attrib.get("length")
+        ),
+        url=direct_url if direct_url.startswith(("http://", "https://")) else "",
+        thumb_url=_str(source.attrib.get("thumburl") or source.attrib.get("cdnthumburl")),
+        md5=_str(source.attrib.get("md5") or source.attrib.get("externmd5")),
+        aes_key=_str(source.attrib.get("aeskey") or source.attrib.get("cdnthumbaeskey")),
+        cdn_file_id=_str(
+            source.attrib.get("cdnurl")
+            or source.attrib.get("encrypturl")
+            or source.attrib.get("thumburl")
+            or source.attrib.get("cdnthumburl")
+            or source.attrib.get("md5")
+        ),
+        raw=xml,
+    )
+    if attachment.cdn_file_id and attachment.aes_key:
+        attachment.needs_download = True
+        attachment.download_hint = GeweDownloadHint("downloadCdn", {
+            "appId": app_id,
+            "aesKey": attachment.aes_key,
+            "totalSize": str(attachment.file_size or ""),
+            "type": _cdn_download_type(attachment.kind),
+            "fileId": attachment.cdn_file_id,
+            "suffix": attachment.file_ext or _suffix_for_kind(attachment.kind),
+        })
+    return attachment
 
 
 def _quote_text_from_refermsg(refermsg: Optional[ET.Element]) -> str:
@@ -799,6 +855,7 @@ def _map_message_type(value: str) -> str:
 def _to_hermes_type(value: str) -> MessageType:
     return {
         "image": MessageType.PHOTO,
+        "emoji": MessageType.PHOTO,
         "voice": MessageType.VOICE,
         "video": MessageType.VIDEO,
         "file": MessageType.DOCUMENT,
@@ -835,6 +892,8 @@ def _flatten_attachments(msg: NormalizedGeweMessage) -> List[GeweAttachment]:
 def _attachment_summary(attachment: GeweAttachment) -> str:
     if attachment.kind == "image":
         return "[图片]"
+    if attachment.kind == "emoji":
+        return "[表情]"
     if attachment.kind == "voice":
         return "[语音]"
     if attachment.kind == "video":
@@ -849,7 +908,13 @@ def _attachment_summary(attachment: GeweAttachment) -> str:
 
 
 def _media_type_for_attachment(attachment: GeweAttachment) -> str:
-    return {"image": "image", "voice": "audio", "video": "video", "file": "document"}.get(attachment.kind, attachment.kind)
+    return {
+        "image": "image/jpeg",
+        "emoji": "image/gif",
+        "voice": "audio/amr",
+        "video": "video/mp4",
+        "file": "application/octet-stream",
+    }.get(attachment.kind, attachment.kind)
 
 
 def _gewe_ok(data: Dict[str, Any]) -> bool:
@@ -914,11 +979,23 @@ def _attachment_kind(value: str) -> str:
 
 
 def _cdn_download_type(kind: str) -> str:
-    return {"image": "2", "voice": "3", "video": "4", "file": "5"}.get(kind, "5")
+    return {"image": "2", "emoji": "2", "voice": "3", "video": "4", "file": "5"}.get(kind, "5")
 
 
 def _suffix_for_kind(kind: str) -> str:
-    return {"image": "jpg", "voice": "amr", "video": "mp4"}.get(kind, "")
+    return {"image": "jpg", "emoji": "gif", "voice": "amr", "video": "mp4"}.get(kind, "")
+
+
+def _emoji_file_ext(source: ET.Element) -> str:
+    candidate = _str(source.attrib.get("type") or source.attrib.get("fileext") or "").lower().strip().lstrip(".")
+    if candidate in {"gif", "png", "jpg", "jpeg", "webp"}:
+        return candidate
+    for attr in ("cdnurl", "thumburl", "externurl", "encrypturl"):
+        value = _str(source.attrib.get(attr)).lower().split("?", 1)[0]
+        for ext in (".gif", ".png", ".jpg", ".jpeg", ".webp"):
+            if value.endswith(ext):
+                return ext.lstrip(".")
+    return "gif"
 
 
 def _ext(attachment: GeweAttachment, default: str) -> str:

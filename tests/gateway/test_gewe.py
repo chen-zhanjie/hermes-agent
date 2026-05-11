@@ -873,9 +873,11 @@ def test_emoji_summary_is_human_readable():
 def test_voice_message_builds_download_hint_from_voiceurl():
     voice_xml = """<msg><voicemsg voicelength="1039" length="1267"
       aeskey="voice-aes" voiceurl="voice-file-id" fromusername="wxid_sender" /></msg>"""
-    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml))
+    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml, msgId=1169533812, newMsgId=9876543210))
 
     assert msg is not None
+    assert msg.provider_message_id == "9876543210"
+    assert msg.provider_legacy_message_id == "1169533812"
     assert msg.message_type == "voice"
     assert len(msg.attachments) == 1
     attachment = msg.attachments[0]
@@ -885,6 +887,7 @@ def test_voice_message_builds_download_hint_from_voiceurl():
     assert attachment.file_ext == "silk"
     assert attachment.download_hint is not None
     assert attachment.download_hint.endpoint == "downloadVoice"
+    assert attachment.download_hint.request_body["msgId"] == 1169533812
     assert any(hint.endpoint == "downloadCdn" for hint in attachment.download_hint.fallbacks)
 
 
@@ -952,7 +955,7 @@ async def test_voice_message_retries_download_voice_when_gewe_reports_not_ready(
         '"voiceLength":0,"data":{"iLen":0},"endFlag":0,'
         '"BaseResponse":{"ret":-2,"errMsg":{}},"cancelFlag":0,"newMsgId":0}}'
     )
-    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml))
+    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml, msgId=1169533812))
     adapter = _adapter()
     adapter._api_post = AsyncMock(side_effect=[
         {"ret": 500, "msg": "语音下载失败", "data": {"code": "-2", "detail": not_ready_detail}},
@@ -966,7 +969,9 @@ async def test_voice_message_retries_download_voice_when_gewe_reports_not_ready(
     assert media_urls == ["/tmp/hermes/cache/audio/audio_abc.silk"]
     assert media_types == ["audio/silk"]
     assert adapter._api_post.await_args_list[0].args[0].endswith("/downloadVoice")
+    assert adapter._api_post.await_args_list[0].args[1]["msgId"] == 1169533812
     assert adapter._api_post.await_args_list[1].args[0].endswith("/downloadVoice")
+    assert adapter._api_post.await_args_list[1].args[1]["msgId"] == 1169533812
     sleep_mock.assert_awaited_once_with(0.8)
 
 

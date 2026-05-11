@@ -125,6 +125,7 @@ class NormalizedGeweMessage:
     conversation_type: str
     message_type: str
     provider_message_id: str = ""
+    provider_legacy_message_id: str = ""
     text: str = ""
     content_xml: str = ""
     create_time: Optional[int] = None
@@ -905,6 +906,7 @@ def normalize_gewe_callback(payload: Any) -> Optional[NormalizedGeweMessage]:
         peer_id = from_group or _first_chatroom(from_user, to_user)
     else:
         peer_id = to_user if from_user == account_id else from_user
+    raw_msg_id = _str(payload.get("msgId"))
     msg = NormalizedGeweMessage(
         account_id=account_id,
         device_id=device_id,
@@ -913,6 +915,7 @@ def normalize_gewe_callback(payload: Any) -> Optional[NormalizedGeweMessage]:
         conversation_type=conversation_type,
         message_type=message_type,
         provider_message_id=_str(payload.get("newMsgId") or payload.get("msgId") or payload.get("id")),
+        provider_legacy_message_id=raw_msg_id,
         text=content if message_type == "text" else "",
         content_xml=xml,
         create_time=_int(payload.get("createTime")),
@@ -921,7 +924,7 @@ def normalize_gewe_callback(payload: Any) -> Optional[NormalizedGeweMessage]:
         raw=payload,
     )
     if xml and message_type != "text":
-        msg.attachments = _attachments_from_xml(message_type, xml, device_id or account_id)
+        msg.attachments = _attachments_from_xml(message_type, xml, device_id or account_id, raw_msg_id)
     if message_type == "quote" and msg.attachments:
         quote = msg.attachments[0]
         msg.text = quote.title or "[引用消息]"
@@ -932,7 +935,7 @@ def normalize_gewe_callback(payload: Any) -> Optional[NormalizedGeweMessage]:
     return msg
 
 
-def _attachments_from_xml(message_type: str, xml: str, app_id: str) -> List[GeweAttachment]:
+def _attachments_from_xml(message_type: str, xml: str, app_id: str, msg_id: str = "") -> List[GeweAttachment]:
     root = _parse_xml(xml)
     if root is None:
         return [GeweAttachment(kind=message_type, raw=xml)]
@@ -947,7 +950,7 @@ def _attachments_from_xml(message_type: str, xml: str, app_id: str) -> List[Gewe
         return [_cdn_attachment("image", img, xml, app_id)]
     voice = root.find(".//voicemsg")
     if voice is not None:
-        return [_cdn_attachment("voice", voice, xml, app_id)]
+        return [_cdn_attachment("voice", voice, xml, app_id, msg_id)]
     video = root.find(".//videomsg")
     if video is not None:
         return [_cdn_attachment("video", video, xml, app_id)]
@@ -1012,7 +1015,7 @@ def _appmsg_attachment(appmsg: ET.Element, xml: str, app_id: str, fallback_type:
     return _with_download_hint(attachment, xml, app_id)
 
 
-def _cdn_attachment(kind: str, source: ET.Element, xml: str, app_id: str) -> GeweAttachment:
+def _cdn_attachment(kind: str, source: ET.Element, xml: str, app_id: str, msg_id: str = "") -> GeweAttachment:
     attachment = GeweAttachment(
         kind=kind,
         file_size=_int(source.attrib.get("length") or source.attrib.get("cdnthumblength")),
@@ -1024,7 +1027,7 @@ def _cdn_attachment(kind: str, source: ET.Element, xml: str, app_id: str) -> Gew
         thumb_url=_str(source.attrib.get("cdnthumburl")),
         duration_seconds=_duration_seconds(source.attrib.get("playlength") or source.attrib.get("voicelength")),
     )
-    return _with_download_hint(attachment, xml, app_id)
+    return _with_download_hint(attachment, xml, app_id, msg_id)
 
 
 def _emoji_attachment(source: ET.Element, xml: str, app_id: str) -> GeweAttachment:
@@ -1131,12 +1134,14 @@ def _record_item_attachment(item: ET.Element, message_type: str, app_id: str) ->
     return attachment
 
 
-def _with_download_hint(attachment: GeweAttachment, xml: str, app_id: str) -> GeweAttachment:
+def _with_download_hint(attachment: GeweAttachment, xml: str, app_id: str, msg_id: str = "") -> GeweAttachment:
     endpoint = {"image": "downloadImage", "voice": "downloadVoice", "video": "downloadVideo", "file": "downloadFile"}.get(attachment.kind)
     if endpoint:
         body: Dict[str, Any] = {"appId": app_id, "xml": xml}
         if attachment.kind == "image":
             body["type"] = 2
+        if attachment.kind == "voice" and msg_id:
+            body["msgId"] = _int(msg_id) or msg_id
         attachment.needs_download = True
         attachment.download_hint = GeweDownloadHint(endpoint, body)
         if attachment.kind == "voice":

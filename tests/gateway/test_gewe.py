@@ -200,6 +200,114 @@ async def test_send_image_uses_gewe_img_url_field():
 
 
 @pytest.mark.asyncio
+async def test_delete_message_uses_cached_gewe_revoke_payload():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(
+        side_effect=[
+            {
+                "ret": 200,
+                "msg": "操作成功",
+                "data": {
+                    "toWxid": "wxid_friend",
+                    "createTime": 1704163145,
+                    "msgId": 769533801,
+                    "newMsgId": 5271007655758710001,
+                },
+            },
+            {"ret": 200, "msg": "操作成功"},
+        ]
+    )
+
+    send_result = await adapter.send("wxid_friend", "hello")
+    deleted = await adapter.delete_message("wxid_friend", send_result.message_id)
+
+    assert deleted is True
+    assert adapter._api_post.await_args_list[1].args == (
+        "/gewe/v2/api/message/revokeMsg",
+        {
+            "appId": "wx_app",
+            "toWxid": "wxid_friend",
+            "msgId": "769533801",
+            "newMsgId": "5271007655758710001",
+            "createTime": "1704163145",
+        },
+    )
+    assert adapter._sent_message_revoke_payloads == {}
+
+
+@pytest.mark.asyncio
+async def test_delete_message_accepts_new_msg_id_alias():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(
+        side_effect=[
+            {
+                "ret": 200,
+                "msg": "操作成功",
+                "data": {
+                    "toWxid": "wxid_friend",
+                    "createTime": "1704163145",
+                    "msgId": "769533801",
+                    "newMsgId": "5271007655758710001",
+                },
+            },
+            {"ret": 200, "msg": "操作成功"},
+        ]
+    )
+
+    await adapter.send("wxid_friend", "hello")
+    deleted = await adapter.delete_message("wxid_friend", "5271007655758710001")
+
+    assert deleted is True
+    assert adapter._api_post.await_args_list[1].args[0] == "/gewe/v2/api/message/revokeMsg"
+
+
+@pytest.mark.asyncio
+async def test_delete_message_without_cached_revoke_payload_returns_false():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock()
+
+    deleted = await adapter.delete_message("wxid_friend", "missing")
+
+    assert deleted is False
+    adapter._api_post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_message_rejects_chat_mismatch():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(
+        return_value={
+            "ret": 200,
+            "msg": "操作成功",
+            "data": {
+                "toWxid": "wxid_friend",
+                "createTime": "1704163145",
+                "msgId": "769533801",
+                "newMsgId": "5271007655758710001",
+            },
+        }
+    )
+
+    await adapter.send("wxid_friend", "hello")
+    deleted = await adapter.delete_message("other_chat", "769533801")
+
+    assert deleted is False
+    assert adapter._api_post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_incomplete_send_response_is_not_revokeable():
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(
+        return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": "769533801"}}
+    )
+
+    await adapter.send("wxid_friend", "hello")
+
+    assert adapter._sent_message_revoke_payloads == {}
+
+
+@pytest.mark.asyncio
 async def test_send_voice_requires_http_silk_url_and_posts_voice_duration():
     adapter = _adapter()
     adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"msgId": 789}})

@@ -172,6 +172,7 @@ class GeweAdapter(BasePlatformAdapter):
             2.0,
         )
         self._pending_media_followups: Dict[str, tuple[MessageEvent, asyncio.Task]] = {}
+        self._sent_message_revoke_payloads: Dict[str, Dict[str, str]] = {}
         self._gewe_lock_keys: List[tuple[str, str]] = []
 
     async def connect(self) -> bool:
@@ -354,19 +355,63 @@ class GeweAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "group" if chat_id.endswith("@chatroom") else "dm"}
 
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> bool:
+        revoke_payload = self._sent_message_revoke_payloads.get(str(message_id or ""))
+        if not revoke_payload:
+            return False
+        if revoke_payload.get("toWxid") != chat_id:
+            return False
+
+        data = await self._api_post("/gewe/v2/api/message/revokeMsg", revoke_payload)
+        ok = _gewe_ok(data)
+        if ok:
+            self._forget_revoke_payload(revoke_payload)
+        return ok
+
     async def _post_message(self, path: str, payload: Dict[str, Any]) -> SendResult:
         try:
             data = await self._api_post(path, payload)
             ok = _gewe_ok(data)
+            body = data.get("data") if isinstance(data.get("data"), dict) else {}
+            message_id = str(body.get("msgId") or body.get("newMsgId") or "")
+            if ok and message_id:
+                self._remember_revoke_payload(payload.get("toWxid"), body)
             return SendResult(
                 success=ok,
-                message_id=str((data.get("data") or {}).get("msgId") or (data.get("data") or {}).get("newMsgId") or "") if isinstance(data.get("data"), dict) else "",
+                message_id=message_id,
                 error=None if ok else str(data),
                 raw_response=data,
                 retryable=not ok,
             )
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
+
+    def _remember_revoke_payload(self, chat_id: Any, body: Dict[str, Any]) -> None:
+        msg_id = str(body.get("msgId") or "").strip()
+        new_msg_id = str(body.get("newMsgId") or "").strip()
+        create_time = str(body.get("createTime") or "").strip()
+        to_wxid = str(chat_id or body.get("toWxid") or "").strip()
+        if not (to_wxid and msg_id and new_msg_id and create_time):
+            return
+
+        revoke_payload = {
+            "appId": self._app_id,
+            "toWxid": to_wxid,
+            "msgId": msg_id,
+            "newMsgId": new_msg_id,
+            "createTime": create_time,
+        }
+        self._sent_message_revoke_payloads[msg_id] = revoke_payload
+        self._sent_message_revoke_payloads[new_msg_id] = revoke_payload
+
+    def _forget_revoke_payload(self, revoke_payload: Dict[str, str]) -> None:
+        for key in (revoke_payload.get("msgId"), revoke_payload.get("newMsgId")):
+            if key:
+                self._sent_message_revoke_payloads.pop(str(key), None)
 
     async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not self._http_client:

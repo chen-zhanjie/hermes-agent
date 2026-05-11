@@ -71,6 +71,10 @@ gateway:
     next_page: "下一页 → `/commands {page}`"
     page_clamped: "_（请求的第 {requested_page} 页超出范围，已显示第 {page} 页。）_"
     unknown: "未知命令 `/{command}`。输入 /commands 查看可用命令，或去掉开头的斜杠作为普通消息发送。"
+  home:
+    onboarding: "📬 {platform} 还没有设置主页频道。主页频道用于接收 Hermes 的定时任务结果和跨平台消息。\n\n输入 {command} 可将当前聊天设为主页频道；不需要的话可以忽略。"
+    save_failed: "保存主页频道失败：{error}"
+    set: "✅ 已将主页频道设为 **{name}**（ID：{chat_id}）。\n之后定时任务结果和跨平台消息会发送到这里。"
   session_info:
     model: "◆ 模型：`{model}`"
     provider: "◆ 提供方：{provider}"

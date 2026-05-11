@@ -83,6 +83,10 @@ gateway:
     next_page: "next → `/commands {page}`"
     page_clamped: "_(Requested page {requested_page} was out of range, showing page {page}.)_"
     unknown: "Unknown command `/{command}`. Type /commands to see what's available, or resend without the leading slash to send as a regular message."
+  home:
+    onboarding: "📬 No home channel is set for {platform}. A home channel is where Hermes delivers cron job results and cross-platform messages.\n\nType {command} to make this chat your home channel, or ignore to skip."
+    save_failed: "Failed to save home channel: {error}"
+    set: "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
   session_info:
     model: "◆ Model: `{model}`"
     provider: "◆ Provider: {provider}"

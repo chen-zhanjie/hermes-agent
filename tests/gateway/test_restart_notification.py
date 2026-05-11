@@ -129,6 +129,16 @@ async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
     assert data["thread_id"] == "topic_7"
 
 
+@pytest.fixture(autouse=True)
+def reset_i18n_cache(monkeypatch):
+    from agent import i18n
+
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+    yield
+    i18n.reset_language_cache()
+
+
 @pytest.mark.asyncio
 async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -189,6 +199,41 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
     assert home is not None
     assert home.chat_id == "home-42"
     assert home.name == "Ops Home"
+
+
+@pytest.mark.asyncio
+async def test_sethome_reply_is_localized_in_chinese(tmp_path, monkeypatch):
+    """Chinese display language should localize /sethome reply chrome."""
+    from agent import i18n
+
+    i18n.reset_language_cache()
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    saved = {}
+
+    def _fake_save_env_value(key, value):
+        saved[key] = value
+
+    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source(chat_id="home-42")
+    source.chat_name = "运维主页"
+    event = MessageEvent(
+        text="/sethome",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m-home",
+    )
+
+    result = await runner._handle_set_home_command(event)
+
+    assert "已将主页频道设为 **运维主页**" in result
+    assert "定时任务结果和跨平台消息" in result
+    assert "Home channel set" not in result
+    assert saved["TELEGRAM_HOME_CHANNEL"] == "home-42"
+    i18n.reset_language_cache()
 
 
 @pytest.mark.asyncio

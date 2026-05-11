@@ -7029,12 +7029,10 @@ class GatewayRunner:
                     if source.platform == Platform.SLACK
                     else "/sethome"
                 )
-                notice = (
-                    f"📬 No home channel is set for {platform_name.title()}. "
-                    f"A home channel is where Hermes delivers cron job results "
-                    f"and cross-platform messages.\n\n"
-                    f"Type {sethome_cmd} to make this chat your home channel, "
-                    f"or ignore to skip."
+                notice = t(
+                    "gateway.home.onboarding",
+                    platform=platform_name.title(),
+                    command=sethome_cmd,
                 )
                 await self._deliver_platform_notice(source, notice)
         
@@ -9051,7 +9049,7 @@ class GatewayRunner:
             # /sethome is run from the parent chat instead of a thread.
             save_env_value(thread_env_key, str(thread_id or ""))
         except Exception as e:
-            return f"Failed to save home channel: {e}"
+            return t("gateway.home.save_failed", error=e)
 
         # Keep the running gateway config in sync too. The pre-restart
         # notification path reads self.config before the process reloads env.
@@ -9067,10 +9065,7 @@ class GatewayRunner:
                 thread_id=str(thread_id) if thread_id else None,
             )
 
-        return (
-            f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
-            f"Cron jobs and cross-platform messages will be delivered here."
-        )
+        return t("gateway.home.set", name=chat_name, chat_id=chat_id)
 
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:

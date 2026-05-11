@@ -840,7 +840,7 @@ class GeweAdapter(BasePlatformAdapter):
         return cache_document_from_bytes(data, attachment.file_name or f"gewe-file{_ext(attachment, '')}")
 
     async def _cache_voice_bytes(self, data: bytes, attachment: GeweAttachment) -> str:
-        cached = cache_audio_from_bytes(data, _ext(attachment, ".silk"))
+        cached = cache_audio_from_bytes(data, _voice_ext_for_data(data, attachment))
         converted = await asyncio.to_thread(_convert_silk_to_mp3, cached)
         return converted or cached
 
@@ -1331,18 +1331,40 @@ def _record_cdn_download_field_candidates(item: ET.Element) -> List[tuple[str, s
 def _voice_cdn_download_hints(attachment: GeweAttachment, app_id: str) -> List[GeweDownloadHint]:
     if not (attachment.cdn_file_id and attachment.aes_key):
         return []
-    suffix = attachment.file_ext or _suffix_for_kind(attachment.kind)
+    suffixes = _voice_download_suffixes(attachment)
+    total_sizes = [str(attachment.file_size or "")]
+    if attachment.file_size:
+        total_sizes.append("")
     hints = []
-    for download_type in (_cdn_download_type("voice"), "5"):
-        hints.append(GeweDownloadHint("downloadCdn", {
-            "appId": app_id,
-            "aesKey": attachment.aes_key,
-            "totalSize": str(attachment.file_size or ""),
-            "type": download_type,
-            "fileId": attachment.cdn_file_id,
-            "suffix": suffix,
-        }))
+    for download_type in ("5", _cdn_download_type("voice")):
+        for suffix in suffixes:
+            for total_size in total_sizes:
+                hints.append(GeweDownloadHint("downloadCdn", {
+                    "appId": app_id,
+                    "aesKey": attachment.aes_key,
+                    "totalSize": total_size,
+                    "type": download_type,
+                    "fileId": attachment.cdn_file_id,
+                    "suffix": suffix,
+                }))
     return _dedupe_download_hints(hints)
+
+
+def _voice_download_suffixes(attachment: GeweAttachment) -> List[str]:
+    candidates = [
+        attachment.file_ext,
+        _suffix_for_kind(attachment.kind),
+        "silk",
+        "amr",
+        "mp3",
+        "",
+    ]
+    suffixes: List[str] = []
+    for candidate in candidates:
+        suffix = str(candidate or "").strip().lower().lstrip(".")
+        if suffix not in suffixes:
+            suffixes.append(suffix)
+    return suffixes
 
 
 def _record_image_download_hints(item: ET.Element, app_id: str, suffix: str) -> List[GeweDownloadHint]:
@@ -1439,8 +1461,26 @@ def _emoji_file_ext(source: ET.Element) -> str:
 
 
 
+def _voice_ext_for_data(data: bytes, attachment: GeweAttachment) -> str:
+    if _looks_like_silk(data):
+        return ".silk"
+    if data[:4] == b"RIFF":
+        return ".wav"
+    if data[:4] == b"OggS":
+        return ".ogg"
+    if data[:4] == b"fLaC":
+        return ".flac"
+    if data[:3] == b"ID3" or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return ".mp3"
+    if data[:5] == b"#!AMR":
+        return ".amr"
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return ".m4a"
+    return _ext(attachment, ".silk")
+
+
 def _looks_like_silk(data: bytes) -> bool:
-    return data.startswith(b"#!SILK_V3") or data.startswith(b"\x02#!SILK_V3")
+    return data.startswith(b"#!SILK") or data.startswith(b"\x02#!SILK") or data.startswith(b"\x02!")
 
 
 def _silk_decoder_command() -> List[str]:
@@ -1463,6 +1503,10 @@ def _convert_silk_to_mp3(path: str) -> str:
 
     ffmpeg = shutil.which("ffmpeg")
     if _looks_like_silk(source.read_bytes()[:16]):
+        if ffmpeg:
+            converted = _convert_silk_with_pilk(source, ffmpeg)
+            if converted:
+                return converted
         decoder = _silk_decoder_command()
         if decoder and ffmpeg:
             converted = _convert_silk_with_decoder(source, decoder, ffmpeg)
@@ -1470,7 +1514,7 @@ def _convert_silk_to_mp3(path: str) -> str:
                 return converted
         if not decoder:
             logger.info(
-                "[GeWe] Silk decoder not found; set %s to the kn007 decoder path for reliable voice transcription",
+                "[GeWe] Silk decoder not found; install pilk or set %s to the kn007 decoder path for reliable voice transcription",
                 GEWE_SILK_DECODER_ENV,
             )
 
@@ -1479,6 +1523,43 @@ def _convert_silk_to_mp3(path: str) -> str:
         return converted
     if source.suffix.lower() == ".silk":
         logger.info("[GeWe] Silk voice cached without MP3 conversion")
+    return ""
+
+
+def _convert_silk_with_pilk(source: Path, ffmpeg: str) -> str:
+    try:
+        import pilk
+    except ImportError:
+        return ""
+
+    wav_path = source.with_suffix(".wav")
+    try:
+        pilk.silk_to_wav(str(source), str(wav_path), rate=16000)
+        converted = _convert_audio_with_ffmpeg(wav_path, ffmpeg)
+        if converted:
+            return converted
+    except Exception as exc:
+        logger.debug("[GeWe] pilk direct silk conversion failed: %s", exc)
+
+    if source.suffix.lower() != ".silk":
+        silk_path = source.with_suffix(".silk")
+        try:
+            shutil.copy2(source, silk_path)
+            pilk.silk_to_wav(str(silk_path), str(wav_path), rate=16000)
+            converted = _convert_audio_with_ffmpeg(wav_path, ffmpeg)
+            if converted:
+                return converted
+        except Exception as exc:
+            logger.debug("[GeWe] pilk .silk conversion failed: %s", exc)
+        finally:
+            try:
+                silk_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    try:
+        wav_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     return ""
 
 

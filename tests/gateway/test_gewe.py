@@ -885,6 +885,7 @@ def test_voice_message_builds_download_hint_from_voiceurl():
     assert attachment.file_ext == "silk"
     assert attachment.download_hint is not None
     assert attachment.download_hint.endpoint == "downloadVoice"
+    assert any(hint.endpoint == "downloadCdn" for hint in attachment.download_hint.fallbacks)
 
 
 @pytest.mark.asyncio
@@ -902,6 +903,27 @@ async def test_voice_message_download_caches_silk_for_stt_path():
     assert media_urls == ["/tmp/hermes/cache/audio/audio_abc.silk"]
     assert media_types == ["audio/silk"]
     assert "[语音] 本地路径: /tmp/hermes/cache/audio/audio_abc.silk" in text
+
+
+@pytest.mark.asyncio
+async def test_voice_message_download_uses_cdn_fallback_after_download_voice_failure():
+    voice_xml = """<msg><voicemsg voicelength="1039" length="1267"
+      aeskey="voice-aes" voiceurl="voice-file-id" fromusername="wxid_sender" /></msg>"""
+    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml))
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(side_effect=[
+        {"ret": 500, "msg": "语音下载失败", "data": {"code": "500"}},
+        {"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/voice.silk"}},
+    ])
+    adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/audio/audio_abc.silk")
+
+    media_urls, media_types = await adapter._cache_media(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/audio/audio_abc.silk"]
+    assert media_types == ["audio/silk"]
+    assert adapter._api_post.await_args_list[0].args[0].endswith("/downloadVoice")
+    assert adapter._api_post.await_args_list[1].args[0].endswith("/downloadCdn")
+    assert adapter._api_post.await_args_list[1].args[1]["type"] == "3"
 
 
 @pytest.mark.asyncio

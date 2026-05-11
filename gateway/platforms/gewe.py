@@ -1098,14 +1098,19 @@ def _record_item_attachment(item: ET.Element, message_type: str, app_id: str) ->
             attachment.download_hint.fallbacks.extend(image_hints[1:])
     elif attachment.cdn_file_id and attachment.aes_key:
         attachment.needs_download = True
-        attachment.download_hint = GeweDownloadHint("downloadCdn", {
-            "appId": app_id,
-            "aesKey": attachment.aes_key,
-            "totalSize": str(attachment.file_size or ""),
-            "type": _cdn_download_type(attachment.kind),
-            "fileId": attachment.cdn_file_id,
-            "suffix": attachment.file_ext or _suffix_for_kind(attachment.kind),
-        })
+        hints = _voice_cdn_download_hints(attachment, app_id) if attachment.kind == "voice" else []
+        if hints:
+            attachment.download_hint = hints[0]
+            attachment.download_hint.fallbacks.extend(hints[1:])
+        else:
+            attachment.download_hint = GeweDownloadHint("downloadCdn", {
+                "appId": app_id,
+                "aesKey": attachment.aes_key,
+                "totalSize": str(attachment.file_size or ""),
+                "type": _cdn_download_type(attachment.kind),
+                "fileId": attachment.cdn_file_id,
+                "suffix": attachment.file_ext or _suffix_for_kind(attachment.kind),
+            })
     return attachment
 
 
@@ -1117,6 +1122,8 @@ def _with_download_hint(attachment: GeweAttachment, xml: str, app_id: str) -> Ge
             body["type"] = 2
         attachment.needs_download = True
         attachment.download_hint = GeweDownloadHint(endpoint, body)
+        if attachment.kind == "voice":
+            attachment.download_hint.fallbacks.extend(_voice_cdn_download_hints(attachment, app_id))
     return attachment
 
 
@@ -1319,6 +1326,23 @@ def _record_cdn_download_field_candidates(item: ET.Element) -> List[tuple[str, s
         seen.add(key)
         candidates.append((file_id, aes_key, size))
     return candidates
+
+
+def _voice_cdn_download_hints(attachment: GeweAttachment, app_id: str) -> List[GeweDownloadHint]:
+    if not (attachment.cdn_file_id and attachment.aes_key):
+        return []
+    suffix = attachment.file_ext or _suffix_for_kind(attachment.kind)
+    hints = []
+    for download_type in (_cdn_download_type("voice"), "5"):
+        hints.append(GeweDownloadHint("downloadCdn", {
+            "appId": app_id,
+            "aesKey": attachment.aes_key,
+            "totalSize": str(attachment.file_size or ""),
+            "type": download_type,
+            "fileId": attachment.cdn_file_id,
+            "suffix": suffix,
+        }))
+    return _dedupe_download_hints(hints)
 
 
 def _record_image_download_hints(item: ET.Element, app_id: str, suffix: str) -> List[GeweDownloadHint]:

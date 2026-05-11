@@ -21,7 +21,9 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
 import socket as _socket
+import subprocess
 from dataclasses import dataclass, field
 from html import unescape
 from pathlib import Path
@@ -70,6 +72,7 @@ DEFAULT_PORT = 8656
 DEFAULT_DIRECT_PATH = "/gewe/callback"
 DEFAULT_RELAY_PATH = "/gewe/relay"
 DEFAULT_RELAY_BASE_URL = "https://hook.yunzxu.com"
+GEWE_SILK_DECODER_ENV = "GEWE_SILK_DECODER"
 SUPPORTED_INBOUND_MODES = {"direct-callback", "relay-callback", "relay-sse"}
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _MEDIA_ONLY_PLACEHOLDERS = {"[图片]", "[表情]"}
@@ -831,10 +834,15 @@ class GeweAdapter(BasePlatformAdapter):
         if attachment.kind in {"image", "emoji"}:
             return cache_image_from_bytes(data, _ext(attachment, ".gif" if attachment.kind == "emoji" else ".jpg"))
         if attachment.kind == "voice":
-            return cache_audio_from_bytes(data, _ext(attachment, ".amr"))
+            return await self._cache_voice_bytes(data, attachment)
         if attachment.kind == "video":
             return cache_video_from_bytes(data, _ext(attachment, ".mp4"))
         return cache_document_from_bytes(data, attachment.file_name or f"gewe-file{_ext(attachment, '')}")
+
+    async def _cache_voice_bytes(self, data: bytes, attachment: GeweAttachment) -> str:
+        cached = cache_audio_from_bytes(data, _ext(attachment, ".silk"))
+        converted = await asyncio.to_thread(_convert_silk_to_mp3, cached)
+        return converted or cached
 
     def _message_text(self, msg: NormalizedGeweMessage) -> str:
         if msg.message_type == "text":
@@ -996,6 +1004,7 @@ def _cdn_attachment(kind: str, source: ET.Element, xml: str, app_id: str) -> Gew
         md5=_str(source.attrib.get("md5")),
         aes_key=_str(source.attrib.get("aeskey") or source.attrib.get("cdnthumbaeskey")),
         cdn_file_id=_str(source.attrib.get("cdnmidimgurl") or source.attrib.get("cdnvideourl") or source.attrib.get("voiceurl") or source.attrib.get("cdnthumburl")),
+        file_ext=_suffix_for_kind(kind) if kind == "voice" else "",
         thumb_url=_str(source.attrib.get("cdnthumburl")),
         duration_seconds=_duration_seconds(source.attrib.get("playlength") or source.attrib.get("voicelength")),
     )
@@ -1204,7 +1213,7 @@ def _media_type_for_attachment(attachment: GeweAttachment) -> str:
     return {
         "image": "image/jpeg",
         "emoji": "image/gif",
-        "voice": "audio/amr",
+        "voice": "audio/mpeg" if attachment.local_path.lower().endswith(".mp3") else "audio/silk",
         "video": "video/mp4",
         "file": "application/octet-stream",
     }.get(attachment.kind, attachment.kind)
@@ -1276,7 +1285,7 @@ def _cdn_download_type(kind: str) -> str:
 
 
 def _suffix_for_kind(kind: str) -> str:
-    return {"image": "jpg", "emoji": "gif", "voice": "amr", "video": "mp4"}.get(kind, "")
+    return {"image": "jpg", "emoji": "gif", "voice": "silk", "video": "mp4"}.get(kind, "")
 
 
 def _record_cdn_download_fields(item: ET.Element) -> tuple[str, str, Optional[int]]:
@@ -1383,6 +1392,8 @@ def _record_image_xml(item: ET.Element) -> str:
 
 
 def _record_file_ext(item: ET.Element, url: str, kind: str) -> str:
+    if kind == "voice":
+        return _first_text(item, "fileext", "datafmt").lower().strip().lstrip(".") or "silk"
     candidate = _first_text(item, "fileext", "datafmt").lower().strip().lstrip(".")
     if candidate:
         return candidate
@@ -1402,6 +1413,92 @@ def _emoji_file_ext(source: ET.Element) -> str:
                 return ext.lstrip(".")
     return "gif"
 
+
+
+def _looks_like_silk(data: bytes) -> bool:
+    return data.startswith(b"#!SILK_V3") or data.startswith(b"\x02#!SILK_V3")
+
+
+def _silk_decoder_command() -> List[str]:
+    configured = os.getenv(GEWE_SILK_DECODER_ENV, "").strip()
+    if configured:
+        return configured.split()
+    for name in ("silk_v3_decoder", "silk-decoder", "decoder"):
+        found = shutil.which(name)
+        if found:
+            return [found]
+    return []
+
+
+def _convert_silk_to_mp3(path: str) -> str:
+    source = Path(path)
+    if not source.exists():
+        return ""
+    if source.suffix.lower() == ".mp3":
+        return str(source)
+
+    ffmpeg = shutil.which("ffmpeg")
+    if _looks_like_silk(source.read_bytes()[:16]):
+        decoder = _silk_decoder_command()
+        if decoder and ffmpeg:
+            converted = _convert_silk_with_decoder(source, decoder, ffmpeg)
+            if converted:
+                return converted
+        if not decoder:
+            logger.info(
+                "[GeWe] Silk decoder not found; set %s to the kn007 decoder path for reliable voice transcription",
+                GEWE_SILK_DECODER_ENV,
+            )
+
+    converted = _convert_audio_with_ffmpeg(source, ffmpeg)
+    if converted:
+        return converted
+    if source.suffix.lower() == ".silk":
+        logger.info("[GeWe] Silk voice cached without MP3 conversion")
+    return ""
+
+
+def _convert_silk_with_decoder(source: Path, decoder: List[str], ffmpeg: str) -> str:
+    pcm_path = source.with_suffix(".pcm")
+    mp3_path = source.with_suffix(".mp3")
+    try:
+        subprocess.run([*decoder, str(source), str(pcm_path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
+        subprocess.run(
+            [ffmpeg, "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", str(pcm_path), str(mp3_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        if mp3_path.exists() and mp3_path.stat().st_size > 0:
+            return str(mp3_path)
+    except Exception as exc:
+        logger.warning("[GeWe] Failed to convert silk voice to mp3 with decoder: %s", exc)
+    finally:
+        try:
+            pcm_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return ""
+
+
+def _convert_audio_with_ffmpeg(source: Path, ffmpeg: str | None) -> str:
+    if not ffmpeg:
+        return ""
+    mp3_path = source.with_suffix(".mp3")
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(source), "-vn", "-acodec", "libmp3lame", str(mp3_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        if mp3_path.exists() and mp3_path.stat().st_size > 0:
+            return str(mp3_path)
+    except Exception as exc:
+        logger.debug("[GeWe] ffmpeg direct audio conversion failed for %s: %s", source.suffix or "audio", exc)
+    return ""
 
 def _ext(attachment: GeweAttachment, default: str) -> str:
     ext = attachment.file_ext.strip().lstrip(".") if attachment.file_ext else ""

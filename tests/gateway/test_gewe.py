@@ -2,8 +2,9 @@
 
 import asyncio
 from html import escape
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -881,5 +882,58 @@ def test_voice_message_builds_download_hint_from_voiceurl():
     assert attachment.kind == "voice"
     assert attachment.cdn_file_id == "voice-file-id"
     assert attachment.duration_seconds == 1
+    assert attachment.file_ext == "silk"
     assert attachment.download_hint is not None
     assert attachment.download_hint.endpoint == "downloadVoice"
+
+
+@pytest.mark.asyncio
+async def test_voice_message_download_caches_silk_for_stt_path():
+    voice_xml = """<msg><voicemsg voicelength="1039" length="1267"
+      aeskey="voice-aes" voiceurl="voice-file-id" fromusername="wxid_sender" /></msg>"""
+    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml))
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/voice.silk"}})
+    adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/audio/audio_abc.silk")
+
+    media_urls, media_types = await adapter._cache_media(msg)
+    text = adapter._message_text(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/audio/audio_abc.silk"]
+    assert media_types == ["audio/silk"]
+    assert "[语音] 本地路径: /tmp/hermes/cache/audio/audio_abc.silk" in text
+
+
+@pytest.mark.asyncio
+async def test_voice_message_cache_reports_mp3_after_silk_conversion():
+    voice_xml = """<msg><voicemsg voicelength="1039" length="1267"
+      aeskey="voice-aes" voiceurl="voice-file-id" fromusername="wxid_sender" /></msg>"""
+    msg = normalize_gewe_callback(_gewe_payload(msgType="VOICE", content=voice_xml))
+    adapter = _adapter()
+    adapter._api_post = AsyncMock(return_value={"ret": 200, "msg": "操作成功", "data": {"fileUrl": "https://cdn.example.com/voice.silk"}})
+    adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/audio/audio_abc.mp3")
+
+    media_urls, media_types = await adapter._cache_media(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/audio/audio_abc.mp3"]
+    assert media_types == ["audio/mpeg"]
+
+
+def test_gewe_silk_voice_conversion_uses_decoder_and_ffmpeg(tmp_path):
+    from gateway.platforms import gewe
+
+    silk = tmp_path / "voice.silk"
+    silk.write_bytes(b"#!SILK_V3\x00payload")
+
+    def fake_run(cmd, **kwargs):
+        output = Path(cmd[-1])
+        output.write_bytes(b"mp3" if output.suffix == ".mp3" else b"pcm")
+        return SimpleNamespace(returncode=0)
+
+    with patch("gateway.platforms.gewe._silk_decoder_command", return_value=["decoder"]), \
+         patch("gateway.platforms.gewe.shutil.which", return_value="ffmpeg"), \
+         patch("gateway.platforms.gewe.subprocess.run", side_effect=fake_run):
+        converted = gewe._convert_silk_to_mp3(str(silk))
+
+    assert converted.endswith(".mp3")
+    assert Path(converted).read_bytes() == b"mp3"

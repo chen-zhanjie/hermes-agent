@@ -1,7 +1,7 @@
 """Tests for the native GeWe v2 callback adapter."""
 
 from gateway.config import PlatformConfig
-from gateway.platforms.gewe import GeweAdapter, _gewe_ok, _route_binding_for_message, normalize_gewe_callback
+from gateway.platforms.gewe import GeweAdapter, _gewe_ok, normalize_gewe_callback
 
 
 def _gewe_payload(**overrides):
@@ -29,6 +29,68 @@ def _adapter(**extra):
         )
     )
 
+
+
+def test_direct_mode_acquires_distinct_gewe_app_and_token_locks(monkeypatch):
+    acquired = []
+    released = []
+
+    def acquire(scope, identity, metadata=None):
+        acquired.append((scope, identity, metadata))
+        return True, None
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", acquire)
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: released.append((scope, identity)))
+
+    adapter = _adapter()
+
+    assert adapter._acquire_gewe_locks() is True
+    assert [(scope, identity) for scope, identity, _ in acquired] == [
+        ("gewe-app-id", "wx_app"),
+        ("gewe-token", "token"),
+    ]
+
+    adapter._release_gewe_locks()
+    assert released == [("gewe-token", "token"), ("gewe-app-id", "wx_app")]
+
+
+def test_relay_mode_acquires_distinct_gewe_and_webhook_router_locks(monkeypatch):
+    acquired = []
+
+    def acquire(scope, identity, metadata=None):
+        acquired.append((scope, identity))
+        return True, None
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", acquire)
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    adapter = _adapter(inbound_mode="relay-sse", relay_app_id="router-app", relay_app_token="router-token")
+
+    assert adapter._acquire_gewe_locks() is True
+    assert acquired == [
+        ("gewe-app-id", "wx_app"),
+        ("gewe-token", "token"),
+        ("gewe-relay-app-id", "router-app"),
+        ("gewe-relay-app-token", "router-token"),
+    ]
+    adapter._release_gewe_locks()
+
+
+def test_lock_failure_releases_previously_acquired_gewe_locks(monkeypatch):
+    released = []
+
+    def acquire(scope, identity, metadata=None):
+        if scope == "gewe-relay-app-id":
+            return False, {"pid": 42}
+        return True, None
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", acquire)
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: released.append((scope, identity)))
+
+    adapter = _adapter(inbound_mode="relay-sse", relay_app_id="router-app", relay_app_token="router-token")
+
+    assert adapter._acquire_gewe_locks() is False
+    assert released == [("gewe-token", "token"), ("gewe-app-id", "wx_app")]
 
 
 def test_gewe_send_success_accepts_ret_200_operation_success():
@@ -135,51 +197,3 @@ def test_voice_message_builds_download_hint_from_voiceurl():
     assert attachment.duration_seconds == 1
     assert attachment.download_hint is not None
     assert attachment.download_hint.endpoint == "downloadVoice"
-
-
-def test_shared_route_prefers_mentioned_bound_wxid_in_group():
-    msg = normalize_gewe_callback(
-        _gewe_payload(
-            eventCode="group_msg_event",
-            fromGroup="25500496398@chatroom",
-            fromUser="wxid_sender_a",
-            atUserList="wxid_bound_b",
-        )
-    )
-    store = {
-        "bindings": {
-            "user:wxid_sender_a": {"type": "user", "identity": "wxid_sender_a", "profile": "sender"},
-            "user:wxid_bound_b": {"type": "user", "identity": "wxid_bound_b", "profile": "mentioned"},
-        }
-    }
-
-    binding = _route_binding_for_message(store, msg)
-
-    assert binding is not None
-    assert binding.profile == "mentioned"
-
-
-def test_shared_route_uses_group_listen_all_before_sender_binding():
-    msg = normalize_gewe_callback(
-        _gewe_payload(
-            eventCode="group_msg_event",
-            fromGroup="25500496398@chatroom",
-            fromUser="wxid_sender_a",
-        )
-    )
-    store = {
-        "bindings": {
-            "user:wxid_sender_a": {"type": "user", "identity": "wxid_sender_a", "profile": "sender"},
-            "group:25500496398@chatroom": {
-                "type": "group",
-                "identity": "25500496398@chatroom",
-                "profile": "group-owner",
-                "listen_all": True,
-            },
-        }
-    }
-
-    binding = _route_binding_for_message(store, msg)
-
-    assert binding is not None
-    assert binding.profile == "group-owner"

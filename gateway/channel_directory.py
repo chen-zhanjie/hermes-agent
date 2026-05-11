@@ -75,9 +75,6 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["slack"] = await _build_slack(adapter)
             elif platform == Platform.GEWE:
                 platforms["gewe"] = _build_gewe(adapter)
-                profile_channels = _build_gewe_profiles(adapter)
-                if profile_channels:
-                    platforms["gewe-profile"] = profile_channels
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -156,31 +153,6 @@ def _build_gewe(adapter) -> List[Dict[str, str]]:
     mode = getattr(adapter, "_inbound_mode", "") or "callback"
     return [{"id": str(app_id), "name": f"GeWe ({mode})", "type": "ingress"}]
 
-
-def _build_gewe_profiles(adapter) -> List[Dict[str, str]]:
-    try:
-        from gateway.platforms.gewe import _load_profile_router_store
-
-        store = _load_profile_router_store(getattr(adapter, "_profile_router_store"))
-    except Exception:
-        return []
-    bindings = store.get("bindings") if isinstance(store.get("bindings"), dict) else {}
-    channels: List[Dict[str, str]] = []
-    for raw in bindings.values():
-        if not isinstance(raw, dict):
-            continue
-        identity = str(raw.get("identity") or raw.get("user_id") or "").strip()
-        profile = str(raw.get("profile") or "").strip()
-        if not identity or not profile:
-            continue
-        binding_type = str(raw.get("type") or "user")
-        label = str(raw.get("name") or raw.get("user_name") or identity)
-        channels.append({
-            "id": identity,
-            "name": f"{label} -> {profile}",
-            "type": binding_type,
-        })
-    return sorted(channels, key=lambda item: (item.get("type", ""), item.get("id", "")))
 
 
 async def _build_slack(adapter) -> List[Dict[str, Any]]:

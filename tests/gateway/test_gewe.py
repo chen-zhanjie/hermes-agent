@@ -668,6 +668,86 @@ async def test_chat_record_cached_file_path_is_injected_into_record_text():
 
 
 
+def test_chat_record_image_item_uses_thumb_cdn_when_full_key_missing():
+    record_xml = _chat_record_xml(
+        _record_dataitem(
+            2,
+            sourcename="陈可乐",
+            datadesc="[图片]",
+            cdndataurl="full-cdn-file-id",
+            cdnthumburl="thumb-cdn-file-id",
+            cdnthumbkey="thumb-aes",
+            thumbfullsize="4567",
+        )
+    )
+
+    msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
+
+    assert msg is not None
+    assert msg.message_type == "chat_record"
+    assert len(msg.items) == 1
+    attachment = msg.items[0].attachments[0]
+    assert attachment.kind == "image"
+    assert attachment.file_ext == "jpg"
+    assert attachment.download_hint is not None
+    assert attachment.download_hint.endpoint == "downloadCdn"
+    assert attachment.download_hint.request_body["appId"] == "wx_app"
+    assert attachment.download_hint.request_body["fileId"] == "thumb-cdn-file-id"
+    assert attachment.download_hint.request_body["aesKey"] == "thumb-aes"
+    assert attachment.download_hint.request_body["totalSize"] == "4567"
+    assert attachment.download_hint.request_body["type"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_chat_record_cached_image_path_is_injected_into_record_text():
+    record_xml = _chat_record_xml(
+        _record_dataitem(
+            2,
+            sourcename="陈可乐",
+            datadesc="[图片]",
+            cdndataurl="image-cdn-file-id",
+            cdndatakey="image-aes",
+            fullmd5size="1234",
+        )
+    )
+    msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
+    adapter = _adapter()
+    adapter._download_media_url = AsyncMock(return_value="https://cdn.example.com/image.jpg")
+    adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/images/img_abc.jpg")
+
+    media_urls, media_types = await adapter._cache_media(msg)
+    text = adapter._message_text(msg)
+
+    assert media_urls == ["/tmp/hermes/cache/images/img_abc.jpg"]
+    assert media_types == ["image/jpeg"]
+    assert "[聊天记录] 1 条" in text
+    assert "陈可乐" in text
+    assert "[图片] 本地路径: /tmp/hermes/cache/images/img_abc.jpg" in text
+
+
+@pytest.mark.asyncio
+async def test_cache_media_skips_non_http_cdn_id_when_download_returns_no_url():
+    record_xml = _chat_record_xml(
+        _record_dataitem(
+            2,
+            sourcename="陈可乐",
+            datadesc="[图片]",
+            cdndataurl="image-cdn-file-id",
+            cdndatakey="image-aes",
+        )
+    )
+    msg = normalize_gewe_callback(_gewe_payload(msgType="APP_MSG", content=record_xml))
+    adapter = _adapter()
+    adapter._download_media_url = AsyncMock(return_value="")
+    adapter._cache_url = AsyncMock()
+
+    media_urls, media_types = await adapter._cache_media(msg)
+
+    assert media_urls == []
+    assert media_types == []
+    adapter._cache_url.assert_not_called()
+
+
 def test_emoji_message_builds_image_attachment_from_emoji_xml():
     emoji_xml = """<msg><emoji md5="emoji-md5" len="2048"
       cdnurl="https://emoji.example.com/e.webp" thumburl="https://emoji.example.com/t.png"

@@ -754,10 +754,16 @@ class GeweAdapter(BasePlatformAdapter):
             return media_urls, media_types
         for attachment in _flatten_attachments(msg):
             file_url = attachment.url
-            if not file_url and attachment.download_hint:
-                file_url = await self._download_media_url(attachment.download_hint)
-            if file_url and not _is_http_url(file_url) and attachment.download_hint:
-                file_url = await self._download_media_url(attachment.download_hint)
+            if attachment.download_hint and (not file_url or not _is_http_url(file_url)):
+                downloaded_url = await self._download_media_url(attachment.download_hint)
+                file_url = downloaded_url or file_url
+            if file_url and not _is_http_url(file_url):
+                logger.warning(
+                    "[GeWe] Skipping media cache because download did not return an HTTP URL: kind=%s endpoint=%s",
+                    attachment.kind,
+                    attachment.download_hint.endpoint if attachment.download_hint else "",
+                )
+                continue
             if not file_url:
                 continue
             try:
@@ -783,10 +789,8 @@ class GeweAdapter(BasePlatformAdapter):
 
     async def _download_media_url(self, hint: GeweDownloadHint) -> str:
         data = await self._api_post(f"/gewe/v2/api/message/{hint.endpoint}", hint.request_body)
-        payload = data.get("data") if isinstance(data, dict) else None
-        if isinstance(payload, dict):
-            return str(payload.get("fileUrl") or payload.get("url") or "")
-        return ""
+        payload = data.get("data") if isinstance(data, dict) else data
+        return _find_http_url(payload, ("fileUrl", "url", "downloadUrl", "file_url"))
 
     async def _cache_url(self, url: str, attachment: GeweAttachment) -> str:
         if not self._http_client:
@@ -1028,19 +1032,23 @@ def _quote_text_from_refermsg(refermsg: Optional[ET.Element]) -> str:
 def _record_item_attachment(item: ET.Element, message_type: str, app_id: str) -> Optional[GeweAttachment]:
     if message_type == "text":
         return None
+    kind = _attachment_kind(message_type)
+    url = _first_text(item, "dataurl", "streamdataurl", "cdndataurl")
+    thumb_url = _first_text(item, "thumburl", "cdnthumburl")
+    cdn_file_id, aes_key, file_size = _record_cdn_download_fields(item)
     attachment = GeweAttachment(
-        kind=_attachment_kind(message_type),
-        title=_text(item.find("datatitle")),
+        kind=kind,
+        title=_first_text(item, "datatitle", "sourcename"),
         description=_text(item.find("datadesc")),
-        file_name=_text(item.find("datatitle")),
-        file_ext=_text(item.find("fileext")) or _text(item.find("datafmt")),
-        file_size=_int(_text(item.find("fullmd5size")) or _text(item.find("datasize"))),
-        url=_text(item.find("dataurl")) or _text(item.find("streamdataurl")) or _text(item.find("cdndataurl")),
-        thumb_url=_text(item.find("thumburl")) or _text(item.find("cdnthumburl")),
-        md5=_text(item.find("fullmd5")) or _text(item.find("dataitemmd5")),
-        aes_key=_text(item.find("dataurlkey")) or _text(item.find("cdndatakey")) or _text(item.find("cdnthumbkey")),
-        cdn_file_id=_text(item.find("cdndataurl")) or _text(item.find("cdnthumburl")),
-        duration_seconds=_int(_text(item.find("duration"))),
+        file_name=_first_text(item, "datatitle", "filename"),
+        file_ext=_record_file_ext(item, url or thumb_url, kind),
+        file_size=file_size,
+        url=url,
+        thumb_url=thumb_url,
+        md5=_first_text(item, "fullmd5", "dataitemmd5", "md5"),
+        aes_key=aes_key,
+        cdn_file_id=cdn_file_id,
+        duration_seconds=_first_int(item, "duration", "playlength", "voicelength"),
         raw=ET.tostring(item, encoding="unicode"),
     )
     if attachment.cdn_file_id and attachment.aes_key:
@@ -1235,6 +1243,34 @@ def _suffix_for_kind(kind: str) -> str:
     return {"image": "jpg", "emoji": "gif", "voice": "amr", "video": "mp4"}.get(kind, "")
 
 
+def _record_cdn_download_fields(item: ET.Element) -> tuple[str, str, Optional[int]]:
+    pairs = (
+        (
+            _first_text(item, "cdndataurl", "cdnmidimgurl", "cdnvideourl", "voiceurl", "cdnattachurl", "attachid"),
+            _first_text(item, "cdndatakey", "dataurlkey", "aeskey"),
+            _first_int(item, "fullmd5size", "datasize", "totallen", "length"),
+        ),
+        (
+            _text(item.find("cdnthumburl")),
+            _text(item.find("cdnthumbkey")),
+            _first_int(item, "cdnthumblength", "thumbsize", "thumbfullsize"),
+        ),
+    )
+    for file_id, aes_key, size in pairs:
+        if file_id and aes_key:
+            return file_id, aes_key, size
+    return "", "", _first_int(item, "fullmd5size", "datasize", "totallen", "length")
+
+
+def _record_file_ext(item: ET.Element, url: str, kind: str) -> str:
+    candidate = _first_text(item, "fileext", "datafmt").lower().strip().lstrip(".")
+    if candidate:
+        return candidate
+    path = urlsplit(url).path.lower() if url else ""
+    suffix = Path(path).suffix.lstrip(".")
+    return suffix or _suffix_for_kind(kind)
+
+
 def _emoji_file_ext(source: ET.Element) -> str:
     candidate = _str(source.attrib.get("type") or source.attrib.get("fileext") or "").lower().strip().lstrip(".")
     if candidate in {"gif", "png", "jpg", "jpeg", "webp"}:
@@ -1258,6 +1294,42 @@ def _text(node: Optional[ET.Element]) -> str:
 
 def _child_text(node: Optional[ET.Element], name: str) -> str:
     return _text(node.find(name)) if node is not None else ""
+
+
+def _first_text(node: ET.Element, *names: str) -> str:
+    for name in names:
+        value = _text(node.find(name))
+        if value:
+            return value
+    return ""
+
+
+def _first_int(node: ET.Element, *names: str) -> Optional[int]:
+    for name in names:
+        value = _int(_text(node.find(name)))
+        if value is not None:
+            return value
+    return None
+
+
+def _find_http_url(value: Any, preferred_keys: tuple[str, ...] = ()) -> str:
+    if isinstance(value, str):
+        return value if _is_http_url(value) else ""
+    if isinstance(value, dict):
+        for key in preferred_keys:
+            url = _find_http_url(value.get(key), preferred_keys)
+            if url:
+                return url
+        for nested in value.values():
+            url = _find_http_url(nested, preferred_keys)
+            if url:
+                return url
+    if isinstance(value, list):
+        for nested in value:
+            url = _find_http_url(nested, preferred_keys)
+            if url:
+                return url
+    return ""
 
 
 def _is_http_url(value: str) -> bool:

@@ -126,6 +126,36 @@ async def test_gate_on_text_fallback_returns_prompt_without_executing(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_gate_on_text_fallback_respects_chinese_language(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    from agent import i18n
+
+    i18n.reset_language_cache()
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    runner._session_key_for_source = lambda src: build_session_key(src)
+
+    execute = AsyncMock(return_value="should not run yet")
+
+    result = await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="这会开始一个新会话并丢弃当前历史。",
+        execute=execute,
+    )
+
+    execute.assert_not_awaited()
+    assert isinstance(result, str)
+    assert "确认 /new" in result
+    assert "仅批准一次" in result
+    assert "以后总是批准" in result
+    assert "取消" in result
+    assert "Approve Once" not in result
+    assert "Confirm /new" not in result
+
+
+@pytest.mark.asyncio
 async def test_gate_on_pending_confirm_registered(monkeypatch):
     """When the gate is on, a pending slash-confirm entry is registered for
     the session — the user's /approve reply will resolve it."""

@@ -11250,7 +11250,7 @@ class GatewayRunner:
         # chosen outcome.
         async def _on_confirm(choice: str) -> Optional[str]:
             if choice == "cancel":
-                return "🟡 /reload-mcp cancelled. MCP tools unchanged."
+                return t("gateway.confirm.reload_mcp_cancelled")
             if choice == "always":
                 # Persist the opt-out and run the reload.
                 try:
@@ -11265,24 +11265,16 @@ class GatewayRunner:
             # once / always → run the reload
             result = await self._execute_mcp_reload(event)
             if choice == "always":
-                return (
-                    f"{result}\n\n"
-                    "ℹ️ Future `/reload-mcp` calls will run without confirmation. "
-                    "Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml."
-                )
+                return f"{result}\n\n" + t("gateway.confirm.reload_mcp_always_note")
             return result
 
-        prompt_message = (
-            "⚠️ **Confirm /reload-mcp**\n\n"
-            "Reloading MCP servers rebuilds the tool set for this session "
-            "and **invalidates the provider prompt cache** — the next "
-            "message will re-send full input tokens.  On long-context or "
-            "high-reasoning models this can be expensive.\n\n"
-            "Choose:\n"
-            "• **Approve Once** — reload now\n"
-            "• **Always Approve** — reload now and silence this prompt permanently\n"
-            "• **Cancel** — leave MCP tools unchanged\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+        prompt_message = t(
+            "gateway.confirm.prompt",
+            command="reload-mcp",
+            detail=t("gateway.confirm.reload_mcp_detail"),
+            approve_once=t("gateway.confirm.reload_mcp_approve_once"),
+            always=t("gateway.confirm.reload_mcp_always"),
+            cancel=t("gateway.confirm.reload_mcp_cancel"),
         )
         return await self._request_slash_confirm(
             event=event,
@@ -11520,7 +11512,7 @@ class GatewayRunner:
 
         async def _on_confirm(choice: str):
             if choice == "cancel":
-                return f"🟡 /{command} cancelled. Conversation unchanged."
+                return t("gateway.confirm.destructive_cancelled", command=command)
             if choice == "always":
                 try:
                     from cli import save_config_value
@@ -11535,11 +11527,7 @@ class GatewayRunner:
                     )
             result = await execute()
             if choice == "always":
-                note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
-                )
+                note = "\n\n" + t("gateway.confirm.destructive_always_note")
                 if isinstance(result, str):
                     return result + note
                 # EphemeralReply or other — leave untouched; the opt-out note
@@ -11548,14 +11536,13 @@ class GatewayRunner:
                 return result
             return result
 
-        prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
-            f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+        prompt_message = t(
+            "gateway.confirm.prompt",
+            command=command,
+            detail=detail,
+            approve_once=t("gateway.confirm.destructive_approve_once"),
+            always=t("gateway.confirm.destructive_always"),
+            cancel=t("gateway.confirm.destructive_cancel"),
         )
         return await self._request_slash_confirm(
             event=event,

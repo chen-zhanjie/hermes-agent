@@ -668,7 +668,7 @@ async def test_chat_record_cached_file_path_is_injected_into_record_text():
 
 
 
-def test_chat_record_image_item_uses_thumb_cdn_when_full_key_missing():
+def test_chat_record_image_item_builds_download_image_hint_from_cdn_fields():
     record_xml = _chat_record_xml(
         _record_dataitem(
             2,
@@ -676,7 +676,7 @@ def test_chat_record_image_item_uses_thumb_cdn_when_full_key_missing():
             datadesc="[图片]",
             cdndataurl="full-cdn-file-id",
             cdnthumburl="thumb-cdn-file-id",
-            cdnthumbkey="thumb-aes",
+            cdnthumbaeskey="thumb-aes",
             thumbfullsize="4567",
         )
     )
@@ -690,12 +690,14 @@ def test_chat_record_image_item_uses_thumb_cdn_when_full_key_missing():
     assert attachment.kind == "image"
     assert attachment.file_ext == "jpg"
     assert attachment.download_hint is not None
-    assert attachment.download_hint.endpoint == "downloadCdn"
+    assert attachment.download_hint.endpoint == "downloadImage"
     assert attachment.download_hint.request_body["appId"] == "wx_app"
-    assert attachment.download_hint.request_body["fileId"] == "thumb-cdn-file-id"
-    assert attachment.download_hint.request_body["aesKey"] == "thumb-aes"
-    assert attachment.download_hint.request_body["totalSize"] == "4567"
-    assert attachment.download_hint.request_body["type"] == "2"
+    assert attachment.download_hint.request_body["type"] == 2
+    hint_xml = attachment.download_hint.request_body["xml"]
+    assert "<img" in hint_xml
+    assert 'cdnmidimgurl="full-cdn-file-id"' in hint_xml
+    assert 'cdnthumburl="thumb-cdn-file-id"' in hint_xml
+    assert 'cdnthumbaeskey="thumb-aes"' in hint_xml
 
 
 @pytest.mark.asyncio
@@ -714,6 +716,9 @@ async def test_chat_record_cached_image_path_is_injected_into_record_text():
     adapter = _adapter()
     adapter._download_media_url = AsyncMock(return_value="https://cdn.example.com/image.jpg")
     adapter._cache_url = AsyncMock(return_value="/tmp/hermes/cache/images/img_abc.jpg")
+
+    attachment = msg.items[0].attachments[0]
+    assert attachment.download_hint.endpoint == "downloadImage"
 
     media_urls, media_types = await adapter._cache_media(msg)
     text = adapter._message_text(msg)

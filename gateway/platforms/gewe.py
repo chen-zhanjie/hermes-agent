@@ -1051,7 +1051,26 @@ def _record_item_attachment(item: ET.Element, message_type: str, app_id: str) ->
         duration_seconds=_first_int(item, "duration", "playlength", "voicelength"),
         raw=ET.tostring(item, encoding="unicode"),
     )
-    if attachment.cdn_file_id and attachment.aes_key:
+    if attachment.kind == "image":
+        image_xml = _record_image_xml(item)
+        if image_xml:
+            attachment.needs_download = True
+            attachment.download_hint = GeweDownloadHint("downloadImage", {
+                "appId": app_id,
+                "xml": image_xml,
+                "type": 2,
+            })
+        elif attachment.cdn_file_id and attachment.aes_key:
+            attachment.needs_download = True
+            attachment.download_hint = GeweDownloadHint("downloadCdn", {
+                "appId": app_id,
+                "aesKey": attachment.aes_key,
+                "totalSize": str(attachment.file_size or ""),
+                "type": _cdn_download_type(attachment.kind),
+                "fileId": attachment.cdn_file_id,
+                "suffix": attachment.file_ext or _suffix_for_kind(attachment.kind),
+            })
+    elif attachment.cdn_file_id and attachment.aes_key:
         attachment.needs_download = True
         attachment.download_hint = GeweDownloadHint("downloadCdn", {
             "appId": app_id,
@@ -1252,7 +1271,7 @@ def _record_cdn_download_fields(item: ET.Element) -> tuple[str, str, Optional[in
         ),
         (
             _text(item.find("cdnthumburl")),
-            _text(item.find("cdnthumbkey")),
+            _first_text(item, "cdnthumbkey", "cdnthumbaeskey"),
             _first_int(item, "cdnthumblength", "thumbsize", "thumbfullsize"),
         ),
     )
@@ -1260,6 +1279,38 @@ def _record_cdn_download_fields(item: ET.Element) -> tuple[str, str, Optional[in
         if file_id and aes_key:
             return file_id, aes_key, size
     return "", "", _first_int(item, "fullmd5size", "datasize", "totallen", "length")
+
+
+def _record_image_xml(item: ET.Element) -> str:
+    mid_url = _first_text(item, "cdndataurl", "cdnmidimgurl")
+    thumb_url = _text(item.find("cdnthumburl")) or mid_url
+    aes_key = _first_text(item, "cdndatakey", "dataurlkey", "aeskey", "cdnthumbkey", "cdnthumbaeskey")
+    thumb_key = _first_text(item, "cdnthumbkey", "cdnthumbaeskey") or aes_key
+    if not (mid_url or thumb_url) or not (aes_key or thumb_key):
+        return ""
+
+    attrs = {
+        "aeskey": aes_key or thumb_key,
+        "encryver": _first_text(item, "encryver", "dataitemsource") or "1",
+        "cdnthumbaeskey": thumb_key or aes_key,
+        "cdnthumburl": thumb_url or mid_url,
+        "cdnthumblength": str(_first_int(item, "cdnthumblength", "thumbsize", "thumbfullsize") or ""),
+        "cdnthumbheight": str(_first_int(item, "cdnthumbheight", "thumbheight") or 0),
+        "cdnthumbwidth": str(_first_int(item, "cdnthumbwidth", "thumbwidth") or 0),
+        "cdnmidheight": str(_first_int(item, "cdnmidheight", "height") or 0),
+        "cdnmidwidth": str(_first_int(item, "cdnmidwidth", "width") or 0),
+        "cdnhdheight": str(_first_int(item, "cdnhdheight") or 0),
+        "cdnhdwidth": str(_first_int(item, "cdnhdwidth") or 0),
+        "cdnmidimgurl": mid_url or thumb_url,
+        "length": str(_first_int(item, "fullmd5size", "datasize", "length", "totallen") or ""),
+        "md5": _first_text(item, "fullmd5", "dataitemmd5", "md5"),
+    }
+    img = ET.Element("img", {key: value for key, value in attrs.items() if value != ""})
+    root = ET.Element("msg")
+    root.append(img)
+    ET.SubElement(root, "platform_signature")
+    ET.SubElement(root, "imgdatahash")
+    return ET.tostring(root, encoding="unicode")
 
 
 def _record_file_ext(item: ET.Element, url: str, kind: str) -> str:

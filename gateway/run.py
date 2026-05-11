@@ -6412,15 +6412,25 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+        context_lines: list[str] = []
+        if event.message_id:
+            context_lines.append(f"[Message ID: {event.message_id}]")
+        if event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
             # already appears in history. The prefix isn't deduplication, it's
             # disambiguation: it tells the agent *which* prior message the user
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            if getattr(event, "reply_to_text", None):
+                reply_snippet = event.reply_to_text[:500]
+                context_lines.append(
+                    f'[Replying to message ID: {event.reply_to_message_id}; quoted text: "{reply_snippet}"]'
+                )
+            else:
+                context_lines.append(f"[Replying to message ID: {event.reply_to_message_id}]")
+        if context_lines:
+            message_text = "\n".join(context_lines) + f"\n\n{message_text}"
 
         if "@" in message_text:
             try:

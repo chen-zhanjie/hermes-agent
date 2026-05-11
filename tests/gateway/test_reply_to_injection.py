@@ -1,6 +1,6 @@
 """Tests for reply-to pointer injection in _prepare_inbound_message_text.
 
-The `[Replying to: "..."]` prefix is a *disambiguation pointer*, not
+The message/reply metadata prefix is a *disambiguation pointer*, not
 deduplication. It must always be injected when the user explicitly replies
 to a prior message — even when the quoted text already exists somewhere
 in the conversation history. History can contain the same or similar text
@@ -55,7 +55,7 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 
     assert result is not None
     assert result.startswith(
-        '[Replying to: "Japan is great for culture, food, and efficiency."]'
+        '[Replying to message ID: 42; quoted text: "Japan is great for culture, food, and efficiency."]'
     )
     assert result.endswith("What's the best time to go?")
 
@@ -95,7 +95,7 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     )
 
     assert result is not None
-    assert result.startswith(f'[Replying to: "{quoted}"]')
+    assert result.startswith(f'[Replying to message ID: 42; quoted text: "{quoted}"]')
     assert result.endswith("What's the best time to go?")
 
 
@@ -115,9 +115,8 @@ async def test_no_prefix_without_reply_context():
 
 
 @pytest.mark.asyncio
-async def test_no_prefix_when_reply_to_text_is_empty():
-    """reply_to_message_id alone without text (e.g. a reply to a media-only
-    message) should not produce an empty `[Replying to: ""]` prefix."""
+async def test_reply_to_id_injected_even_when_reply_to_text_is_empty():
+    """reply_to_message_id alone is useful for media-only replies."""
     runner = _make_runner()
     source = _source()
     event = MessageEvent(
@@ -133,7 +132,26 @@ async def test_no_prefix_when_reply_to_text_is_empty():
         history=[],
     )
 
-    assert result == "hi"
+    assert result == "[Replying to message ID: 42]\n\nhi"
+
+
+@pytest.mark.asyncio
+async def test_current_message_id_injected_when_present():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="hello",
+        source=source,
+        message_id="1001",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "[Message ID: 1001]\n\nhello"
 
 
 @pytest.mark.asyncio
@@ -155,5 +173,5 @@ async def test_reply_snippet_truncated_to_500_chars():
     )
 
     assert result is not None
-    assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
+    assert result.startswith('[Replying to message ID: 42; quoted text: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result

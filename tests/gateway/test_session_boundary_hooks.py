@@ -10,6 +10,16 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
+@pytest.fixture(autouse=True)
+def reset_i18n_cache(monkeypatch):
+    from agent import i18n
+
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+    yield
+    i18n.reset_language_cache()
+
+
 def _make_source() -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,
@@ -166,6 +176,27 @@ async def test_hook_error_does_not_break_reset(mock_invoke_hook):
 
     # Should still return a success message despite hook errors
     assert "Session reset" in result or "New session" in result
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook", side_effect=Exception("boom"))
+async def test_reset_reply_is_localized_in_chinese(mock_invoke_hook, monkeypatch):
+    """Chinese display language should localize /new system reply chrome."""
+    from agent import i18n
+
+    i18n.reset_language_cache()
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    runner = _make_runner()
+    runner._format_session_info = lambda: "◆ 模型：`gpt-5.5`\n◆ 提供方：custom:云知序\n◆ 上下文：256K tokens（默认值）"
+
+    result = str(await runner._handle_reset_command(_make_event("/new")))
+
+    assert "会话已重置" in result
+    assert "◆ 模型" in result
+    assert "✦ 提示：" in result
+    assert "Session reset" not in result
+    assert "Tip:" not in result
+    i18n.reset_language_cache()
 
 
 @pytest.mark.asyncio

@@ -71,6 +71,23 @@ gateway:
     next_page: "next → `/commands {page}`"
     page_clamped: "_(Requested page {requested_page} was out of range, showing page {page}.)_"
     unknown: "Unknown command `/{command}`. Type /commands to see what's available, or resend without the leading slash to send as a regular message."
+  session_info:
+    model: "◆ Model: `{model}`"
+    provider: "◆ Provider: {provider}"
+    context: "◆ Context: {context} tokens ({source})"
+    endpoint: "◆ Endpoint: {endpoint}"
+    source_config: "config"
+    source_default: "default — set model.context_length in config to override"
+    source_detected: "detected"
+  reset:
+    session_reset: "✨ Session reset! Starting fresh."
+    new_session: "✨ New session started!"
+    new_session_named: "✨ New session started: {title}"
+    title_rejected: "⚠️ Title rejected: {error}"
+    title_rejected_untitled: "⚠️ {error} — session started untitled."
+    title_empty_untitled: "⚠️ Title is empty after cleanup — session started untitled."
+    tip: "✦ Tip: {tip}"
+    tip_soul: "✦ Tip: SOUL.md is auto-seeded with a default personality on first run. Edit ~/.hermes/SOUL.md to customize."
   confirm:
     prompt: "⚠️ **Confirm /{command}**\n\n{detail}\n\nChoose:\n• **Approve Once** — {approve_once}\n• **Always Approve** — {always}\n• **Cancel** — {cancel}\n\n_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
     destructive_approve_once: "proceed this time only"

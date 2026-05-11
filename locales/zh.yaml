@@ -71,6 +71,23 @@ gateway:
     next_page: "下一页 → `/commands {page}`"
     page_clamped: "_（请求的第 {requested_page} 页超出范围，已显示第 {page} 页。）_"
     unknown: "未知命令 `/{command}`。输入 /commands 查看可用命令，或去掉开头的斜杠作为普通消息发送。"
+  session_info:
+    model: "◆ 模型：`{model}`"
+    provider: "◆ 提供方：{provider}"
+    context: "◆ 上下文：{context} tokens（{source}）"
+    endpoint: "◆ 端点：{endpoint}"
+    source_config: "来自配置"
+    source_default: "默认值，可在 config.yaml 设置 model.context_length 覆盖"
+    source_detected: "自动检测"
+  reset:
+    session_reset: "✨ 会话已重置！现在重新开始。"
+    new_session: "✨ 已开始新会话！"
+    new_session_named: "✨ 已开始新会话：{title}"
+    title_rejected: "⚠️ 标题被拒绝：{error}"
+    title_rejected_untitled: "⚠️ {error}，会话已以无标题方式开始。"
+    title_empty_untitled: "⚠️ 标题清理后为空，会话已以无标题方式开始。"
+    tip: "✦ 提示：{tip}"
+    tip_soul: "✦ 提示：首次运行时会自动生成默认人格文件 SOUL.md。你可以编辑 ~/.hermes/SOUL.md 来自定义。"
   confirm:
     prompt: "⚠️ **确认 /{command}**\n\n{detail}\n\n请选择：\n• **仅批准一次** — {approve_once}\n• **以后总是批准** — {always}\n• **取消** — {cancel}\n\n_文字回复也可以：回复 `/approve`、`/always` 或 `/cancel`。_"
     destructive_approve_once: "只执行这一次"

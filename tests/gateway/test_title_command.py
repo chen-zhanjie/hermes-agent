@@ -15,6 +15,16 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def reset_i18n_cache(monkeypatch):
+    from agent import i18n
+
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+    yield
+    i18n.reset_language_cache()
+
+
 def _make_event(text="/title", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
     """Build a MessageEvent for testing."""

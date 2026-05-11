@@ -7,6 +7,16 @@ from pathlib import Path
 from gateway.run import GatewayRunner
 
 
+@pytest.fixture(autouse=True)
+def reset_i18n_cache(monkeypatch):
+    from agent import i18n
+
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+    yield
+    i18n.reset_language_cache()
+
+
 @pytest.fixture()
 def runner():
     """Create a bare GatewayRunner without __init__."""
@@ -108,3 +118,25 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "4K" in info
         assert "config" in info
+
+    def test_chinese_session_info_labels(self, runner, tmp_path, monkeypatch):
+        from agent import i18n
+
+        i18n.reset_language_cache()
+        monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: test-model\n  provider: custom\n  context_length: 32768\n",
+            "test-model",
+            {"provider": "custom", "base_url": "http://localhost:11434/v1", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "◆ 模型：`test-model`" in info
+        assert "◆ 提供方：custom" in info
+        assert "◆ 上下文：32K tokens（来自配置）" in info
+        assert "◆ 端点：http://localhost:11434/v1" in info
+        assert "Model:" not in info
+        assert "Provider:" not in info
+        assert "Context:" not in info
+        i18n.reset_language_cache()
